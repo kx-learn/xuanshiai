@@ -1,0 +1,33 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local package metadata
+.venv/
+venv/
+env/
+.uv-cache/
+*.egg-info/
+dist/
+build/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime files
+logs/*
+!logs/.gitkeep
+storage/uploads/*
+!storage/uploads/.gitkeep
+
+# IDE and operating system files
+.idea/
+.vscode/*.log
+.DS_Store
+Thumbs.db

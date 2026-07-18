@@ -1,0 +1,2 @@
+# Runtime dependencies. For local development, install the dev extras from pyproject.toml.
+-e .
