@@ -2,10 +2,63 @@
 # 注意：此文件主要用于数据库表结构定义和初始化
 # 日常数据库操作请使用 core.database.get_conn()
 # 已移除 SQLAlchemy ORM，完全使用 pymysql
-import pymysql
-from core.config import get_db_config
-from core.logging import get_logger
+import os
+import sys
+import logging
 import json
+import pymysql
+import re
+
+def get_db_config():
+    """
+    从环境变量获取数据库配置。
+    优先解析 DATABASE_URL，如果不存在则回退到独立的 DB_* 变量。
+    """
+    # 1. 优先尝试从 DATABASE_URL 解析
+    database_url = os.getenv('DATABASE_URL', '')
+    if database_url:
+        # 匹配格式: mysql+aiomysql://user:password@host:port/database
+        # 兼容 mysql:// 和 mysql+aiomysql://
+        pattern = r'mysql(?:\+[^:]+)?://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)'
+        match = re.match(pattern, database_url)
+        if match:
+            user, password, host, port, database = match.groups()
+            return {
+                'host': host,
+                'port': int(port),
+                'user': user,
+                'password': password,
+                'database': database,
+            }
+        else:
+            logger.warning(f"⚠️ 无法解析 DATABASE_URL: {database_url}，回退到独立变量")
+
+    # 2. 回退方案：从独立的 DB_* 变量读取
+    return {
+        'host': os.getenv('DB_HOST', 'localhost'),
+        'port': int(os.getenv('DB_PORT', 3306)),
+        'user': os.getenv('DB_USER', 'root'),
+        'password': os.getenv('DB_PASSWORD', ''),
+        'database': os.getenv('DB_NAME', 'xuanshiai'),
+    }
+
+
+# =============================================
+# 日志配置
+# =============================================
+
+def get_logger(name):
+    """获取日志记录器"""
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        )
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
+
 
 # 使用统一的日志配置
 logger = get_logger(__name__)
