@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import health
-from app.api.routes import auth, discovery, identity, profile, users
+from app.api.routes import admin, auth, community, discovery, identity, profile, social, users
 
 
 api_router = APIRouter()
@@ -14,3 +14,6 @@ api_router.include_router(identity.router, tags=["identity"])
 api_router.include_router(profile.router, tags=["profile"])
 api_router.include_router(discovery.router, tags=["discovery"])
 api_router.include_router(discovery.users_router, tags=["public-profile"])
+api_router.include_router(social.router, tags=["social"])
+api_router.include_router(community.router, tags=["community"])
+api_router.include_router(admin.router, tags=["admin"])

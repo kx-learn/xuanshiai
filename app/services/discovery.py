@@ -61,13 +61,14 @@ CARD_SELECT = """
     LEFT JOIN user_profile_completion c ON c.user_id = u.id
     LEFT JOIN user_auth ua ON ua.user_id = u.id
     LEFT JOIN user_privacy pr ON pr.user_id = u.id
+    LEFT JOIN user_partner_preference vp ON vp.user_id = :viewer_id
 """
 
 
 async def _viewer_context(db: AsyncSession, user_id: int) -> dict[str, Any]:
     result = await db.execute(
         text("""SELECT u.gender, u.birthday, COALESCE(c.score, 0) AS completion_score,
-                      p.height, p.education_level, p.income, p.mbti, p.interest_tags,
+                      u.phone, p.height, p.education_level, p.income, p.mbti, p.interest_tags,
                       p.personality_tags, p.tags, p.residence_city_code,
                       pref.age_min, pref.age_max, pref.height_min, pref.height_max,
                       pref.education_min, pref.income_min, pref.marriage_status,
@@ -238,6 +239,7 @@ async def _fetch_rows(
     plaza: bool,
     nickname: str | None = None,
     tag: str | None = None,
+    respect_preferences: bool = True,
 ) -> list[dict[str, Any]]:
     viewer = await _viewer_context(db, viewer_id)
     viewer_is_vip = await _is_vip(db, viewer_id)
@@ -250,6 +252,7 @@ async def _fetch_rows(
         "u.id <> :viewer_id", "u.status = 1", "COALESCE(c.score, 0) >= 100",
         "COALESCE(pr.who_can_see_me, 1) <> 4", "COALESCE(pr.match_status, 1) = 1",
         "(:viewer_is_vip = 1 OR COALESCE(pr.who_can_see_me, 1) <> 3)",
+        "NOT EXISTS (SELECT 1 FROM user_media pending_media WHERE pending_media.user_id = u.id AND pending_media.deleted_at IS NULL AND pending_media.review_status IN (0, 2, 3))",
         "NOT EXISTS (SELECT 1 FROM user_block bl WHERE (bl.user_id = :viewer_id AND bl.target_user_id = u.id) OR (bl.user_id = u.id AND bl.target_user_id = :viewer_id))",
     ]
     if nickname:
@@ -265,6 +268,18 @@ async def _fetch_rows(
     if viewer.get("gender") in (1, 2):
         clauses.append("u.gender <> :opposite_gender")
         params["opposite_gender"] = viewer["gender"]
+    if respect_preferences:
+        clauses.extend([
+            "(vp.age_min IS NULL OR TIMESTAMPDIFF(YEAR, u.birthday, CURDATE()) >= vp.age_min)",
+            "(vp.age_max IS NULL OR TIMESTAMPDIFF(YEAR, u.birthday, CURDATE()) <= vp.age_max)",
+            "(vp.height_min IS NULL OR p.height >= vp.height_min)",
+            "(vp.height_max IS NULL OR p.height <= vp.height_max)",
+            "(vp.education_min IS NULL OR p.education_level >= vp.education_min)",
+            "(vp.income_min IS NULL OR p.income >= vp.income_min)",
+            "(vp.marriage_status IS NULL OR vp.marriage_status = 0 OR u.is_married = vp.marriage_status)",
+            "(vp.preferred_province_code IS NULL OR p.residence_province_code = vp.preferred_province_code)",
+            "(vp.preferred_city_codes IS NULL OR JSON_LENGTH(vp.preferred_city_codes) = 0 OR JSON_CONTAINS(vp.preferred_city_codes, JSON_QUOTE(p.residence_city_code)))",
+        ])
     if not plaza:
         clauses.extend([
             "NOT EXISTS (SELECT 1 FROM user_browse_history bh WHERE bh.user_id = :viewer_id AND bh.target_user_id = u.id)",
@@ -279,6 +294,8 @@ async def _fetch_rows(
 
 async def get_discovery_page(db: AsyncSession, viewer_id: int, filters: DiscoveryFilters, *, plaza: bool) -> DiscoveryPage:
     viewer = await _viewer_context(db, viewer_id)
+    if viewer["completion_score"] < 100:
+        raise HTTPException(403, detail="请先完善资料后再进入推荐")
     rows = await _fetch_rows(db, viewer_id, filters, plaza=plaza)
     scored = [(_candidate_score(viewer, row), row) for row in rows]
     scored.sort(key=lambda item: (bool(item[1].get("is_boosted")), item[0][0], item[1].get("last_active_at") or datetime.min), reverse=True)
@@ -291,6 +308,8 @@ async def get_discovery_page(db: AsyncSession, viewer_id: int, filters: Discover
 async def search_discovery(db: AsyncSession, viewer_id: int, query: DiscoverySearch) -> DiscoveryPage:
     filters = DiscoveryFilters(page=query.page, page_size=query.page_size)
     viewer = await _viewer_context(db, viewer_id)
+    if viewer["completion_score"] < 100:
+        raise HTTPException(403, detail="请先完善资料后再搜索用户")
     rows = await _fetch_rows(
         db,
         viewer_id,
@@ -298,6 +317,7 @@ async def search_discovery(db: AsyncSession, viewer_id: int, query: DiscoverySea
         plaza=True,
         nickname=query.nickname,
         tag=query.tag,
+        respect_preferences=False,
     )
     scored = [(_candidate_score(viewer, row), row) for row in rows]
     scored.sort(key=lambda item: (item[0][0], item[1].get("last_active_at") or datetime.min), reverse=True)
@@ -394,7 +414,7 @@ async def view_profile(db: AsyncSession, viewer_id: int, target_id: int) -> Publ
     full = vip or (not privacy_locked and quota is not None)
     await _record_browse(db, viewer_id, target_id)
     card = _card(row, score, reason, detail_locked=not full)
-    profile = await get_profile(db, target_id) if full else None
+    profile = await get_profile(db, target_id, public=True) if full else None
     return PublicProfileResponse(user_id=target_id, card=card, profile=profile, is_vip_viewer=vip, browse_quota_remaining=quota, can_apply=viewer["completion_score"] >= 100)
 
 
@@ -411,6 +431,9 @@ async def _target_rows(db: AsyncSession, viewer_id: int, target_ids: list[int]) 
         text(CARD_SELECT + f""" WHERE u.id IN ({placeholders}) AND u.status = 1
                  AND COALESCE(pr.who_can_see_me, 1) <> 4
                  AND COALESCE(pr.match_status, 1) = 1
+                 AND NOT EXISTS (SELECT 1 FROM user_media pending_media
+                     WHERE pending_media.user_id = u.id AND pending_media.deleted_at IS NULL
+                       AND pending_media.review_status IN (0, 2, 3))
                  AND (:viewer_is_vip = 1 OR COALESCE(pr.who_can_see_me, 1) <> 3)"""),
         params,
     )
@@ -504,6 +527,8 @@ async def create_application(db: AsyncSession, viewer_id: int, target_id: int, r
     viewer = await _viewer_context(db, viewer_id)
     if viewer["completion_score"] < 100:
         raise HTTPException(403, detail="请先完善资料后再申请认识")
+    if not viewer.get("phone"):
+        raise HTTPException(403, detail="请先绑定手机号")
     existing = await db.execute(text("SELECT id, status FROM match_apply WHERE ((from_user_id = :from_id AND to_user_id = :to_id) OR (from_user_id = :to_id AND to_user_id = :from_id)) AND status IN (0, 1) LIMIT 1"), {"from_id": viewer_id, "to_id": target_id})
     if existing.first():
         raise HTTPException(409, detail="双方已有进行中的认识申请或匹配")

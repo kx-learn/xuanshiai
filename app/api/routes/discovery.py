@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Body, Depends, Path, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import CurrentUser, get_current_user
+from app.api.dependencies import CurrentUser, get_current_user, get_verified_user
 from app.db.session import get_db
 from app.schemas.discovery import (
     ApplicationCreateRequest,
@@ -49,27 +49,27 @@ async def filter_options() -> FilterOptionsResponse:
 
 
 @router.get("/recommendations", response_model=DiscoveryPage, summary="查询推荐名片流")
-async def recommendations(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def recommendations(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await get_discovery_page(db, current.id, filters, plaza=False)
 
 
 @router.get("/plaza", response_model=DiscoveryPage, summary="查询广场名片流")
-async def plaza(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def plaza(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await get_discovery_page(db, current.id, filters, plaza=True)
 
 
 @router.get("/search", response_model=DiscoveryPage, summary="按昵称或标签搜索用户")
-async def search(query: DiscoverySearch = Depends(), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def search(query: DiscoverySearch = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await search_discovery(db, current.id, query)
 
 
 @router.get("/filters/saved", response_model=SavedFilterResponse, summary="获取已保存筛选条件")
-async def saved_filter(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SavedFilterResponse:
+async def saved_filter(current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> SavedFilterResponse:
     return await get_saved_filter(db, current.id)
 
 
 @router.put("/filters/saved", response_model=SavedFilterResponse, summary="保存筛选条件")
-async def update_saved_filter(body: DiscoveryFilters, current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SavedFilterResponse:
+async def update_saved_filter(body: DiscoveryFilters, current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> SavedFilterResponse:
     return await save_filter(db, current.id, body)
 
 

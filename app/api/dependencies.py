@@ -56,6 +56,13 @@ async def get_current_user(
     return CurrentUser(**dict(row))
 
 
+async def get_verified_user(current: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Require a verified phone before social discovery and interaction actions."""
+    if not current.phone:
+        raise HTTPException(status_code=403, detail="请先绑定手机号")
+    return current
+
+
 async def get_current_admin(
     current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

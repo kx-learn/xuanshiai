@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.profile_tags import TAG_CATEGORIES
+from app.schemas.admin import MediaReviewRequest, MediaReviewResponse
 from app.schemas.auth import (
     CompletionItemResponse,
     CompletionResponse,
@@ -180,19 +181,21 @@ def _media_url(user_id: int, filename: str) -> str:
     return f"/storage/uploads/{user_id}/{filename}"
 
 
-async def _get_media(db: AsyncSession, user_id: int, media_type: str | None = None) -> list[dict[str, Any]]:
+async def _get_media(db: AsyncSession, user_id: int, media_type: str | None = None, approved_only: bool = False) -> list[dict[str, Any]]:
     query = """SELECT id, media_type, file_url, thumbnail_url, sort_order, is_primary, duration_seconds
                FROM user_media WHERE user_id = :user_id AND deleted_at IS NULL"""
     params: dict[str, Any] = {"user_id": user_id}
     if media_type:
         query += " AND media_type = :media_type"
         params["media_type"] = media_type
+    if approved_only:
+        query += " AND review_status = 1"
     query += " ORDER BY sort_order ASC, id ASC"
     result = await db.execute(text(query), params)
     return [_media_response(row) for row in result.mappings().all()]
 
 
-async def get_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
+async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> dict[str, Any]:
     result = await db.execute(
         text("""SELECT u.id AS user_id, u.nickname, u.gender, u.birthday, u.is_married, u.avatar,
                       p.height, p.occupation, p.industry, p.education_level, p.income,
@@ -208,7 +211,7 @@ async def get_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
     row = result.mappings().first()
     if not row:
         raise HTTPException(404, detail="用户不存在")
-    media = await _get_media(db, user_id)
+    media = await _get_media(db, user_id, approved_only=public)
     photos = [item for item in media if item["media_type"] == "photo"]
     videos = [item for item in media if item["media_type"] == "video"]
     backgrounds = [item for item in media if item["media_type"] == "background"]
@@ -630,3 +633,15 @@ async def get_tag_options() -> TagOptionsResponse:
 
 async def get_profile_preview(db: AsyncSession, user_id: int) -> ProfilePreviewResponse:
     return ProfilePreviewResponse(preview_notice="这是别人看到你的样子", profile=await get_profile(db, user_id))
+
+
+async def review_media(db: AsyncSession, media_id: int, request: MediaReviewRequest) -> MediaReviewResponse:
+    result = await db.execute(text("SELECT id, user_id FROM user_media WHERE id = :media_id AND deleted_at IS NULL FOR UPDATE"), {"media_id": media_id})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(404, detail="媒体不存在")
+    await db.execute(text("""UPDATE user_media SET review_status = :status, review_reason = :reason,
+        reviewed_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = :media_id"""), {"media_id": media_id, "status": request.status, "reason": request.reason})
+    await recalculate_completion(db, int(row["user_id"]))
+    await db.commit()
+    return MediaReviewResponse(media_id=media_id, user_id=int(row["user_id"]), status=request.status, reason=request.reason)
