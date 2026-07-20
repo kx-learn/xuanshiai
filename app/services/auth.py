@@ -27,6 +27,8 @@ from app.schemas.auth import (
     RefreshRequest,
     WechatLoginRequest,
 )
+from app.services.sms.providers import get_sms_provider
+from app.services.wechat.providers import get_wechat_provider
 
 
 class SmsStore:
@@ -38,8 +40,8 @@ class SmsStore:
         self._lock = asyncio.Lock()
 
     async def issue(self, phone: str, purpose: str, ip: str, device_id: str | None) -> int:
-        if settings.sms_provider == "disabled":
-            raise HTTPException(503, detail="短信服务未配置")
+        if settings.sms_provider.lower() == "disabled":
+            await get_sms_provider().send_code(phone, purpose, "")
         now = datetime.now(UTC)
         async with self._lock:
             key = (phone, purpose)
@@ -53,7 +55,8 @@ class SmsStore:
                 count = 0
             if count >= settings.sms_daily_limit:
                 raise HTTPException(429, detail="今日验证码发送次数已达上限")
-            code = f"{secrets.randbelow(1_000_000):06d}"
+            code = settings.sms_mock_code if settings.sms_provider.lower() == "mock" else f"{secrets.randbelow(1_000_000):06d}"
+            await get_sms_provider().send_code(phone, purpose, code)
             self._items[key] = {
                 "hash": hash_passwordless_code(code),
                 "sent_at": now,
@@ -90,6 +93,8 @@ sms_store = SmsStore()
 
 
 async def exchange_wechat_code(code: str) -> dict[str, str]:
+    if settings.wechat_provider.lower() == "mock":
+        return await get_wechat_provider().exchange_code(code)
     if not settings.wechat_app_id or not settings.wechat_app_secret:
         raise HTTPException(503, detail="微信登录服务未配置")
     url = "https://api.weixin.qq.com/sns/jscode2session"

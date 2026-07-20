@@ -99,3 +99,16 @@ Header：`Authorization: Bearer <access_token>`。请求体与验证码请求相
 | `422` | 请求格式、长度、范围或成年人校验失败 |
 | `429` | 验证码频率、次数或错误锁定限制 |
 | `503` | 微信或短信服务未配置/不可用 |
+# 认证接口
+
+## 测试环境 Mock
+
+没有短信服务商或微信小程序配置时，可以在 `development` 或 `testing` 环境配置：
+
+```env
+SMS_PROVIDER=mock
+SMS_MOCK_CODE=123456
+WECHAT_PROVIDER=mock
+```
+
+Mock 短信验证码固定为 `123456`。Mock 微信登录请求中的 `code` 使用 `mock-code-001` 等格式，同一个后缀会映射到同一个测试用户。生产环境禁止启用 Mock，接口路径、请求结构和响应结构与真实服务保持一致。
