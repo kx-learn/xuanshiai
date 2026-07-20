@@ -65,6 +65,20 @@ code .env
 
 `.env` 包含本地密钥和连接信息，不要提交到 Git。完整配置说明见 `.env.example`。
 
+### Mock 认证服务
+
+没有短信服务商或微信小程序配置时，可以在开发/测试环境使用 Mock：
+
+```env
+ENVIRONMENT=testing
+SMS_PROVIDER=mock
+SMS_MOCK_CODE=123456
+WECHAT_PROVIDER=mock
+WECHAT_MOCK_OPENID_PREFIX=mock-openid-
+```
+
+Mock 短信验证码固定为 `123456`，Mock 微信登录凭证使用 `mock-code-001`、`mock-code-002` 等格式。Mock 只在 `development` 和 `testing` 环境允许，生产环境启用 Mock 时应用配置校验会失败。Mock 不会改变现有认证接口的路径和请求响应结构，也不会新增公开的验证码查询接口。
+
 ### MySQL 项目数据库配置
 
 1. 打开 `.env`，把 `YOUR_MYSQL_PASSWORD` 替换为你安装 MySQL 时设置的 `root` 密码：
