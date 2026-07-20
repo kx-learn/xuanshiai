@@ -45,6 +45,15 @@ class Settings(BaseSettings):
 
     cors_origins_raw: str = "http://localhost:3000,http://localhost:5173"
     upload_dir: str = "storage/uploads"
+    public_base_url: str = "http://127.0.0.1:8000"
+    wechat_mini_program_page: str = "pages/profile/profile"
+    recommendation_page_size: int = 20
+    browse_daily_limit: int = 20
+    browse_high_match_bonus: int = 5
+    apply_daily_free_limit: int = 3
+    apply_daily_vip_limit: int = 10
+    superlike_daily_free_limit: int = 1
+    superlike_daily_vip_limit: int = 3
     log_level: str = "INFO"
 
     @property

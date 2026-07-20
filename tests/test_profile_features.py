@@ -19,8 +19,10 @@ def test_profile_validates_mbti_height_and_tags() -> None:
         mbti="INTJ",
         interest_tags=["健身", "旅行", "摄影"],
         personality_tags=["内向但真诚", "温柔细心", "独立自信"],
+        tag_selections={"sports": ["健身", "跑步"], "city": ["上海"]},
     )
     assert request.mbti == "INTJ"
+    assert request.tag_selections["sports"] == ["健身", "跑步"]
 
     with pytest.raises(ValidationError):
         ProfileUpdateRequest(height=149)
@@ -28,6 +30,8 @@ def test_profile_validates_mbti_height_and_tags() -> None:
         ProfileUpdateRequest(mbti="XXXX")
     with pytest.raises(ValidationError):
         ProfileUpdateRequest(interest_tags=["只有一个"])
+    with pytest.raises(ValidationError):
+        ProfileUpdateRequest(tag_selections={"sports": ["自定义标签"]})
 
 
 def test_preference_ranges_must_be_ordered() -> None:

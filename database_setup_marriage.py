@@ -23,6 +23,14 @@ def get_db_config():
     """
     # 1. 优先尝试从 DATABASE_URL 解析
     database_url = os.getenv('DATABASE_URL', '')
+    if not database_url:
+        # 让独立执行的建表脚本复用项目 Settings 的 .env 加载逻辑。
+        try:
+            from app.core.config import settings
+
+            database_url = settings.database_url
+        except Exception:
+            database_url = ''
     if database_url:
         # 兼容 mysql:// 和 mysql+aiomysql://，并正确解码 URL 中的特殊字符。
         parsed = urlsplit(database_url.replace("mysql+aiomysql://", "mysql://", 1))
@@ -60,6 +68,8 @@ def get_logger(name):
     """获取日志记录器"""
     logger = logging.getLogger(name)
     if not logger.handlers:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(
             logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -203,6 +213,11 @@ class DatabaseManager:
                 'suspended_at': "`suspended_at` datetime DEFAULT NULL",
                 'suspension_reason': "`suspension_reason` varchar(255) DEFAULT NULL",
             },
+            'user_boost': {
+                'start_at': "`start_at` datetime DEFAULT CURRENT_TIMESTAMP",
+                'end_at': "`end_at` datetime DEFAULT NULL",
+                'status': "`status` tinyint NOT NULL DEFAULT '1' COMMENT '1生效中 2已过期 3已撤销'",
+            },
         }
 
         for table_name, columns in required_columns.items():
@@ -284,6 +299,7 @@ class DatabaseManager:
             ('user_favorite', 'target_user_id'),
             ('user_browse_history', 'user_id'),
             ('user_browse_history', 'target_user_id'),
+            ('user_notification', 'user_id'),
             ('user_boost', 'user_id'),
             ('user_boost', 'target_user_id'),
             ('user_match', 'user_id'),
@@ -813,6 +829,43 @@ class DatabaseManager:
                     KEY `idx_user` (`user_id`),
                     KEY `idx_target` (`target_user_id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户浏览足迹'
+            """,
+
+            # ============================================
+            # 9.1 用户通知
+            # ============================================
+            'user_notification': """
+                CREATE TABLE IF NOT EXISTS `user_notification` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `user_id` bigint unsigned NOT NULL,
+                    `notification_type` varchar(64) NOT NULL,
+                    `title` varchar(128) NOT NULL,
+                    `content` varchar(255) DEFAULT NULL,
+                    `payload` json DEFAULT NULL,
+                    `related_user_id` bigint unsigned DEFAULT NULL,
+                    `related_id` bigint unsigned DEFAULT NULL,
+                    `is_read` tinyint NOT NULL DEFAULT '0',
+                    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+                    `read_at` datetime DEFAULT NULL,
+                    PRIMARY KEY (`id`),
+                    KEY `idx_user_created` (`user_id`,`created_at`),
+                    KEY `idx_user_unread` (`user_id`,`is_read`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户通知'
+            """,
+
+            # ============================================
+            # 9.2 用户首页筛选条件
+            # ============================================
+            'user_discovery_filter': """
+                CREATE TABLE IF NOT EXISTS `user_discovery_filter` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `user_id` bigint unsigned NOT NULL,
+                    `filter_json` json NOT NULL,
+                    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_user_id` (`user_id`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户首页筛选条件'
             """,
 
             # ============================================
