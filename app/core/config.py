@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,8 +37,11 @@ class Settings(BaseSettings):
     sms_code_expire_seconds: int = 300
     sms_send_interval_seconds: int = 60
     sms_daily_limit: int = 10
+    sms_mock_code: str = "123456"
     wechat_app_id: str | None = None
     wechat_app_secret: str | None = None
+    wechat_provider: str = "wechat"
+    wechat_mock_openid_prefix: str = "mock-openid-"
     sms_provider: str = "disabled"
     agreement_versions_raw: str = (
         "user_service:v1,privacy_policy:v1,safety_pledge:v1,community_rules:v1"
@@ -70,6 +74,24 @@ class Settings(BaseSettings):
                 agreement_type, version = item.split(":", 1)
                 versions[agreement_type.strip()] = version.strip()
         return versions
+
+    @property
+    def is_test_mode(self) -> bool:
+        """Return whether development-only providers are allowed."""
+        return self.environment in {"development", "testing"}
+
+    @model_validator(mode="after")
+    def validate_test_providers(self) -> "Settings":
+        """Prevent Mock providers from being enabled in production."""
+        if not self.is_test_mode and (
+            self.sms_provider == "mock" or self.wechat_provider == "mock"
+        ):
+            raise ValueError("生产环境禁止启用短信或微信 Mock 服务")
+        if self.sms_provider.lower() == "mock" and (
+            len(self.sms_mock_code) != 6 or not self.sms_mock_code.isdigit()
+        ):
+            raise ValueError("SMS_MOCK_CODE 必须是6位数字")
+        return self
 
 
 @lru_cache

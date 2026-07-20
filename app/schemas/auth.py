@@ -17,7 +17,7 @@ MbtiType = Literal[
 
 
 class SmsSendRequest(BaseModel):
-    phone: str = Field(pattern=r"^1[3-9]\d{9}$", examples=["17870810285"], description="11位大陆手机号")
+    phone: str = Field(pattern=r"^1[3-9]\d{9}$", examples=["13812345678"], description="11位大陆手机号")
     purpose: Literal["login", "bind_phone"] = "login"
 
 
