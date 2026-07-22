@@ -33,3 +33,4 @@ storage/uploads/*
 .DS_Store
 Thumbs.db
 docs/后端功能模块划分汇总.md
+docs\后端功能清单评估.md
