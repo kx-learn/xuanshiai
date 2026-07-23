@@ -16,6 +16,7 @@ bearer = HTTPBearer(auto_error=False)
 @dataclass(frozen=True)
 class CurrentUser:
     id: int
+    session_id: int
     phone: str | None
     status: int
     realname_status: int
@@ -54,7 +55,7 @@ async def get_current_user(
         {"id": session_id},
     )
     await db.commit()
-    return CurrentUser(**dict(row))
+    return CurrentUser(**dict(row), session_id=session_id)
 
 
 async def get_verified_user(current: CurrentUser = Depends(get_current_user)) -> CurrentUser:

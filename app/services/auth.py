@@ -29,6 +29,7 @@ from app.schemas.auth import (
 )
 from app.services.sms.providers import get_sms_provider
 from app.services.wechat.providers import get_wechat_provider
+from app.services.presence import mark_session_online
 
 
 class SmsStore:
@@ -156,6 +157,7 @@ async def create_session(
         text("UPDATE user_session SET access_token_hash = :hash WHERE id = :id"),
         {"hash": hash_token(access), "id": session_id},
     )
+    await mark_session_online(db, user_id, int(session_id))
     return {"access_token": access, "refresh_token": refresh, "expires_in": settings.access_token_expire_minutes * 60,
             "user_id": user_id}
 

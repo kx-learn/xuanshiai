@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import health
-from app.api.routes import admin, auth, certifications, community, discovery, identity, matchmaker, membership, points, profile, regions, social, users
+from app.api.routes import admin, auth, certifications, community, discovery, identity, matchmaker, membership, points, presence, profile, regions, social, users
 
 
 api_router = APIRouter()
@@ -14,6 +14,7 @@ api_router.include_router(certifications.router, tags=["certifications"])
 api_router.include_router(membership.router, tags=["membership"])
 api_router.include_router(points.router, tags=["points"])
 api_router.include_router(regions.router, tags=["regions"])
+api_router.include_router(presence.router, tags=["presence"])
 api_router.include_router(identity.router, tags=["identity"])
 api_router.include_router(matchmaker.router, tags=["matchmaker"])
 api_router.include_router(matchmaker.requests_router, tags=["matchmaker-service"])

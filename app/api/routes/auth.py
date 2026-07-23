@@ -21,6 +21,7 @@ from app.schemas.auth import (
     WechatLoginRequest,
 )
 from app.services import auth
+from app.services.presence import mark_session_offline, mark_user_offline
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 router = APIRouter(prefix="/auth")
@@ -70,6 +71,7 @@ async def logout(request: Request, credentials: HTTPAuthorizationCredentials | N
         try:
             payload = decode_access_token(credentials.credentials)
             await auth.revoke_session(db, int(payload["sid"]))
+            await mark_session_offline(db, int(payload["sub"]), int(payload["sid"]))
             await db.commit()
         except (ValueError, KeyError):
             pass
@@ -79,6 +81,7 @@ async def logout(request: Request, credentials: HTTPAuthorizationCredentials | N
 async def logout_all(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> None:
     """撤销当前账号的全部有效登录会话。"""
     await db.execute(text("UPDATE user_session SET status = 2, revoked_at = UTC_TIMESTAMP(), revoke_reason = 'logout_all' WHERE user_id = :id AND status = 1"), {"id": current.id})
+    await mark_user_offline(db, current.id)
     await db.commit()
 
 

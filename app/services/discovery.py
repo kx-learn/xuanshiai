@@ -43,7 +43,10 @@ CARD_SELECT = """
            p.residence_province_code, p.residence_city_code, p.residence_district_code,
            (p.residence_city_code IS NOT NULL AND p.residence_city_code =
              (SELECT vp2.residence_city_code FROM user_profile vp2 WHERE vp2.user_id = :viewer_id)) AS same_city,
-           p.mbti, p.interest_tags, p.personality_tags, p.tags, p.online_status,
+           p.mbti, p.interest_tags, p.personality_tags, p.tags,
+           CASE WHEN p.online_status = 2 THEN 2
+                WHEN p.last_active_at IS NOT NULL AND p.last_active_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND) THEN 1
+                ELSE 0 END AS online_status,
            p.last_active_at, COALESCE(c.score, 0) AS completion_score,
            COALESCE(ua.realname_status, 0) AS realname_status,
            COALESCE(pr.only_vip_can_see_detail, 0) AS only_vip_can_see_detail,
