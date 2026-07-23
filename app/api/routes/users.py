@@ -15,6 +15,7 @@ from app.schemas.auth import (
     ProfilePreviewResponse,
     ProfileResponse,
     ProfileUpdateRequest,
+    ProfileOverviewResponse,
 )
 from app.services.profile import (
     delete_photo,
@@ -31,9 +32,15 @@ from app.services.profile import (
     upload_background,
     upload_photo,
     upload_video,
+    get_profile_overview,
 )
 
 router = APIRouter(prefix="/users/me")
+
+
+@router.get("/overview", response_model=ProfileOverviewResponse, summary="获取我的页面聚合信息")
+async def overview(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> ProfileOverviewResponse:
+    return await get_profile_overview(db, current.id)
 
 
 @router.get("/profile", response_model=ProfileResponse, summary="获取个人资料")

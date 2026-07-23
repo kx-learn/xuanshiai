@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -69,7 +68,8 @@ async def _viewer_context(db: AsyncSession, user_id: int) -> dict[str, Any]:
     result = await db.execute(
         text("""SELECT u.gender, u.birthday, COALESCE(c.score, 0) AS completion_score,
                       u.phone, p.height, p.education_level, p.income, p.mbti, p.interest_tags,
-                      p.personality_tags, p.tags, p.residence_city_code,
+               p.personality_tags, p.tags, p.residence_city_code,
+               COALESCE(ua.realname_status, 0) AS realname_status,
                       pref.age_min, pref.age_max, pref.height_min, pref.height_max,
                       pref.education_min, pref.income_min, pref.marriage_status,
                       pref.preferred_city_codes
@@ -477,7 +477,7 @@ async def _ensure_target(db: AsyncSession, viewer_id: int, target_id: int) -> No
     result = await db.execute(text("""SELECT u.id, COALESCE(pr.who_can_see_me, 1) AS who_can_see_me,
                 COALESCE(pr.match_status, 1) AS match_status
                 FROM users u LEFT JOIN user_privacy pr ON pr.user_id = u.id
-                WHERE u.id = :id AND u.status = 1"""), {"id": target_id})
+                WHERE u.id = :id AND u.status = 1 FOR UPDATE"""), {"id": target_id})
     row = result.mappings().first()
     if not row or row["who_can_see_me"] == 4 or row["match_status"] != 1:
         raise HTTPException(404, detail="目标用户不存在")
@@ -529,6 +529,8 @@ async def create_application(db: AsyncSession, viewer_id: int, target_id: int, r
         raise HTTPException(403, detail="请先完善资料后再申请认识")
     if not viewer.get("phone"):
         raise HTTPException(403, detail="请先绑定手机号")
+    if viewer.get("realname_status") != 2:
+        raise HTTPException(403, detail="请先完成实名认证")
     existing = await db.execute(text("SELECT id, status FROM match_apply WHERE ((from_user_id = :from_id AND to_user_id = :to_id) OR (from_user_id = :to_id AND to_user_id = :from_id)) AND status IN (0, 1) LIMIT 1"), {"from_id": viewer_id, "to_id": target_id})
     if existing.first():
         raise HTTPException(409, detail="双方已有进行中的认识申请或匹配")
@@ -587,8 +589,26 @@ async def _expire_pending_applications(db: AsyncSession) -> None:
         WHERE status = 0 AND expire_at IS NOT NULL AND expire_at <= UTC_TIMESTAMP()"""))
 
 
-async def create_superlike(db: AsyncSession, viewer_id: int, target_id: int) -> SuperLikeResponse:
+async def create_superlike(db: AsyncSession, viewer_id: int, target_id: int, idempotency_key: str) -> SuperLikeResponse:
     await _ensure_target(db, viewer_id, target_id)
+    viewer_result = await db.execute(text("""SELECT u.phone, COALESCE(c.score, 0) AS completion_score
+        FROM users u LEFT JOIN user_profile_completion c ON c.user_id = u.id
+        WHERE u.id = :user_id FOR UPDATE"""), {"user_id": viewer_id})
+    viewer = viewer_result.mappings().first()
+    if not viewer or not viewer["phone"]:
+        raise HTTPException(403, detail="请先绑定手机号")
+    if float(viewer["completion_score"] or 0) < 100:
+        raise HTTPException(403, detail="请先完善资料后再爆灯")
+    order_no = "free-superlike-" + idempotency_key
+    existing = await db.execute(text("""SELECT created_at FROM user_boost
+        WHERE user_id = :user_id AND target_user_id = :target_id AND order_no = :order_no
+        ORDER BY id DESC LIMIT 1"""), {"user_id": viewer_id, "target_id": target_id, "order_no": order_no})
+    existing_row = existing.mappings().first()
+    if existing_row:
+        vip = await _is_vip(db, viewer_id)
+        limit = settings.superlike_daily_vip_limit if vip else settings.superlike_daily_free_limit
+        used = int(await redis_client.get(await _quota_key("superlike", viewer_id)) or 0)
+        return SuperLikeResponse(target_user_id=target_id, remaining_today=max(0, limit - used), created_at=existing_row["created_at"])
     vip = await _is_vip(db, viewer_id)
     limit = settings.superlike_daily_vip_limit if vip else settings.superlike_daily_free_limit
     key = await _quota_key("superlike", viewer_id)
@@ -598,7 +618,7 @@ async def create_superlike(db: AsyncSession, viewer_id: int, target_id: int) -> 
     try:
         await db.execute(text("""INSERT INTO user_boost (user_id, target_user_id, amount, order_no, start_at, end_at, status)
             VALUES (:user_id, :target_id, 0, :order_no, :start_at, :end_at, 1)"""), {
-            "user_id": viewer_id, "target_id": target_id, "order_no": "free-superlike-" + uuid.uuid4().hex,
+            "user_id": viewer_id, "target_id": target_id, "order_no": order_no,
             "start_at": created_at, "end_at": created_at + timedelta(days=1),
         })
         await _notify(db, target_id, "superlike", "收到爆灯", "有人对你发出了爆灯信号", viewer_id)

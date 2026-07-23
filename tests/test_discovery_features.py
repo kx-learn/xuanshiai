@@ -47,3 +47,10 @@ def test_filter_options_is_public() -> None:
     response = client.get("/api/v1/discovery/filter-options")
     assert response.status_code == 200
     assert response.json()["genders"]
+
+
+def test_my_overview_is_registered_and_requires_authentication() -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/v1/users/me/overview" in paths
+    response = client.get("/api/v1/users/me/overview")
+    assert response.status_code == 401

@@ -40,14 +40,15 @@ async def get_current_user(
                FROM users u LEFT JOIN user_auth ua ON ua.user_id = u.id
                JOIN user_session s ON s.user_id = u.id
                WHERE u.id = :user_id AND s.id = :session_id AND s.status = 1
-                 AND s.revoked_at IS NULL AND s.access_expire_at > UTC_TIMESTAMP()
-                 AND u.status = 1"""
+                 AND s.revoked_at IS NULL AND s.access_expire_at > UTC_TIMESTAMP()"""
         ),
         {"user_id": user_id, "session_id": session_id},
     )
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=401, detail="登录状态已失效")
+    if int(row["status"]) != 1:
+        raise HTTPException(status_code=403, detail="账号当前不可用")
     await db.execute(
         text("UPDATE user_session SET last_used_at = UTC_TIMESTAMP() WHERE id = :id"),
         {"id": session_id},
@@ -60,6 +61,20 @@ async def get_verified_user(current: CurrentUser = Depends(get_current_user)) ->
     """Require a verified phone before social discovery and interaction actions."""
     if not current.phone:
         raise HTTPException(status_code=403, detail="请先绑定手机号")
+    return current
+
+
+async def get_browsable_user(
+    current: CurrentUser = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+) -> CurrentUser:
+    """Require the single server-side gate shared by homepage discovery APIs."""
+    result = await db.execute(
+        text("SELECT COALESCE(score, 0) FROM user_profile_completion WHERE user_id = :user_id"),
+        {"user_id": current.id},
+    )
+    if float(result.scalar() or 0) < 100:
+        raise HTTPException(status_code=403, detail="请先完善资料后再进入首页")
     return current
 
 

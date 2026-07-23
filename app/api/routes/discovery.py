@@ -1,9 +1,9 @@
 """Homepage discovery, card interactions and public profile routes."""
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Response
+from fastapi import APIRouter, Body, Depends, Header, Path, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import CurrentUser, get_current_user, get_verified_user
+from app.api.dependencies import CurrentUser, get_browsable_user, get_current_user, get_verified_user
 from app.db.session import get_db
 from app.schemas.discovery import (
     ApplicationCreateRequest,
@@ -49,17 +49,17 @@ async def filter_options() -> FilterOptionsResponse:
 
 
 @router.get("/recommendations", response_model=DiscoveryPage, summary="查询推荐名片流")
-async def recommendations(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def recommendations(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_browsable_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await get_discovery_page(db, current.id, filters, plaza=False)
 
 
 @router.get("/plaza", response_model=DiscoveryPage, summary="查询广场名片流")
-async def plaza(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def plaza(filters: DiscoveryFilters = Depends(), current: CurrentUser = Depends(get_browsable_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await get_discovery_page(db, current.id, filters, plaza=True)
 
 
 @router.get("/search", response_model=DiscoveryPage, summary="按昵称或标签搜索用户")
-async def search(query: DiscoverySearch = Depends(), current: CurrentUser = Depends(get_verified_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
+async def search(query: DiscoverySearch = Depends(), current: CurrentUser = Depends(get_browsable_user), db: AsyncSession = Depends(get_db)) -> DiscoveryPage:
     return await search_discovery(db, current.id, query)
 
 
@@ -124,8 +124,8 @@ async def reject_application(application_id: int = Path(..., ge=1), body: Applic
 
 
 @router.post("/superlikes/{target_id}", response_model=SuperLikeResponse, status_code=201, summary="爆灯")
-async def superlike(target_id: int = Path(..., ge=1), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SuperLikeResponse:
-    return await create_superlike(db, current.id, target_id)
+async def superlike(target_id: int = Path(..., ge=1), idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=8, max_length=128), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SuperLikeResponse:
+    return await create_superlike(db, current.id, target_id, idempotency_key)
 
 
 @users_router.get("/{user_id}/profile", response_model=PublicProfileResponse, summary="查看他人主页")

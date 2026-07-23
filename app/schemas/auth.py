@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -178,6 +179,40 @@ class CompletionResponse(BaseModel):
     can_browse: bool
     can_apply: bool
     can_chat: bool
+
+
+class CertificationSummary(BaseModel):
+    status: Literal[0, 1, 2, 3]
+    label: str
+
+
+class MembershipSummary(BaseModel):
+    is_vip: bool
+    package_type: str | None
+    expires_at: datetime | None
+
+
+class OverviewShortcuts(BaseModel):
+    can_browse: bool
+    can_apply: bool
+    can_chat: bool
+    can_edit_profile: bool = True
+    can_manage_media: bool = True
+
+
+class ProfileOverviewResponse(BaseModel):
+    user_id: int
+    nickname: str | None
+    avatar: str | None
+    account_status: Literal[1, 2, 3]
+    completion_score: float
+    certification: CertificationSummary
+    membership: MembershipSummary
+    unread_notification_count: int
+    incoming_application_count: int
+    outgoing_application_count: int
+    match_count: int
+    shortcuts: OverviewShortcuts
 
 
 class CompletionItemResponse(BaseModel):

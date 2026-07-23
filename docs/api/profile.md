@@ -10,6 +10,56 @@ Authorization: Bearer <access_token>
 
 JSON 接口使用 `Content-Type: application/json`；上传接口使用 `multipart/form-data`。
 
+## 0. 我的页面聚合信息
+
+### `GET /api/v1/users/me/overview`
+
+- 权限：登录用户；只能返回当前 Token 对应用户的信息
+- 参数：无
+- 成功状态：`200 OK`
+
+服务端聚合我的页面首屏所需的摘要，不返回密码、Token、完整手机号、实名证件、支付密钥或风控字段。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `user_id` | integer | 当前用户 ID |
+| `nickname` / `avatar` | string/null | 当前用户昵称和头像 |
+| `account_status` | integer | 当前账号状态；正常登录用户为 `1`。冻结/注销账号访问受保护接口时返回 `403` |
+| `completion_score` | number | 服务端计算的资料完整度 |
+| `certification` | object | 实名认证摘要，仅包含状态和展示文案 |
+| `certification.status` | integer | `0` 未提交、`1` 审核中、`2` 已通过、`3` 未通过 |
+| `membership` | object | 当前有效会员摘要 |
+| `membership.is_vip` | boolean | 当前是否有有效会员 |
+| `membership.package_type` | string/null | 当前会员套餐类型 |
+| `membership.expires_at` | datetime/null | 当前会员到期时间 |
+| `unread_notification_count` | integer | 未读通知数量 |
+| `incoming_application_count` / `outgoing_application_count` | integer | 待处理的收到/发出申请数量 |
+| `match_count` | integer | 当前有效匹配数量 |
+| `shortcuts` | object | 当前账号可用的快捷入口权限，来源于服务端门槛计算 |
+
+响应示例：
+
+```json
+{
+  "user_id": 12,
+  "nickname": "小明",
+  "avatar": "/storage/uploads/12/avatar.webp",
+  "account_status": 1,
+  "completion_score": 100,
+  "certification": {"status": 2, "label": "已通过"},
+  "membership": {"is_vip": false, "package_type": null, "expires_at": null},
+  "unread_notification_count": 2,
+  "incoming_application_count": 1,
+  "outgoing_application_count": 0,
+  "match_count": 3,
+  "shortcuts": {"can_browse": true, "can_apply": true, "can_chat": true, "can_edit_profile": true, "can_manage_media": true}
+}
+```
+
+### 变更记录
+
+- 2026-07-23：新增 overview 聚合接口；认证、会员、通知、申请和匹配摘要均由服务端查询，旧的独立资料接口保持不变。
+
 ## 1. 固定标签目录
 
 ### `GET /api/v1/profile/tag-options`

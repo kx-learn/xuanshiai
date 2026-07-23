@@ -29,6 +29,7 @@ from app.schemas.auth import (
     PhotoOrderRequest,
     PreferenceUpdateRequest,
     ProfilePreviewResponse,
+    ProfileOverviewResponse,
     ProfileUpdateRequest,
     TagCategoryResponse,
     TagOptionsResponse,
@@ -223,6 +224,10 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
     data["photos"] = photos
     data["video"] = videos[0] if videos else None
     data["background_wall"] = backgrounds[0]["file_url"] if backgrounds else None
+    if public:
+        # Public profile responses must not expose exact location or income by default.
+        for field in ("income", "hometown_province_code", "hometown_city_code", "hometown_district_code", "residence_province_code", "residence_city_code", "residence_district_code"):
+            data[field] = None
     return data
 
 
@@ -380,6 +385,42 @@ async def get_completion(db: AsyncSession, user_id: int) -> CompletionResponse:
         can_browse=score >= 100,
         can_apply=score >= 100 and row["realname_status"] == 2,
         can_chat=score >= 100 and row["realname_status"] == 2,
+    )
+
+
+async def get_profile_overview(db: AsyncSession, user_id: int) -> ProfileOverviewResponse:
+    completion = await get_completion(db, user_id)
+    result = await db.execute(text("""SELECT u.id, u.nickname, u.avatar, u.status,
+        COALESCE(ua.realname_status, 0) AS realname_status,
+        EXISTS (SELECT 1 FROM user_membership m WHERE m.user_id = u.id AND m.status = 1
+          AND (m.start_at IS NULL OR m.start_at <= UTC_TIMESTAMP())
+          AND (m.end_at IS NULL OR m.end_at > UTC_TIMESTAMP())) AS is_vip,
+        (SELECT m.package_type FROM user_membership m WHERE m.user_id = u.id AND m.status = 1
+          AND (m.start_at IS NULL OR m.start_at <= UTC_TIMESTAMP())
+          AND (m.end_at IS NULL OR m.end_at > UTC_TIMESTAMP()) ORDER BY m.end_at DESC LIMIT 1) AS package_type,
+        (SELECT m.end_at FROM user_membership m WHERE m.user_id = u.id AND m.status = 1
+          AND (m.start_at IS NULL OR m.start_at <= UTC_TIMESTAMP())
+          AND (m.end_at IS NULL OR m.end_at > UTC_TIMESTAMP()) ORDER BY m.end_at DESC LIMIT 1) AS expires_at,
+        (SELECT COUNT(*) FROM user_notification n WHERE n.user_id = u.id AND n.is_read = 0) AS unread_count,
+        (SELECT COUNT(*) FROM match_apply a WHERE a.to_user_id = u.id AND a.status = 0) AS incoming_count,
+        (SELECT COUNT(*) FROM match_apply a WHERE a.from_user_id = u.id AND a.status = 0) AS outgoing_count,
+        (SELECT COUNT(*) FROM user_match m WHERE m.user_id = u.id AND m.status IN (1, 2)) AS match_count
+        FROM users u LEFT JOIN user_auth ua ON ua.user_id = u.id WHERE u.id = :user_id"""), {"user_id": user_id})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(404, detail="用户不存在")
+    realname_status = int(row["realname_status"] or 0)
+    labels = {0: "未提交", 1: "审核中", 2: "已通过", 3: "未通过"}
+    return ProfileOverviewResponse(
+        user_id=int(row["id"]), nickname=row["nickname"], avatar=row["avatar"],
+        account_status=int(row["status"]), completion_score=completion.score,
+        certification={"status": realname_status, "label": labels[realname_status]},
+        membership={"is_vip": bool(row["is_vip"]), "package_type": row["package_type"], "expires_at": row["expires_at"]},
+        unread_notification_count=int(row["unread_count"] or 0),
+        incoming_application_count=int(row["incoming_count"] or 0),
+        outgoing_application_count=int(row["outgoing_count"] or 0),
+        match_count=int(row["match_count"] or 0),
+        shortcuts={"can_browse": completion.can_browse, "can_apply": completion.can_apply, "can_chat": completion.can_chat},
     )
 
 
@@ -632,7 +673,7 @@ async def get_tag_options() -> TagOptionsResponse:
 
 
 async def get_profile_preview(db: AsyncSession, user_id: int) -> ProfilePreviewResponse:
-    return ProfilePreviewResponse(preview_notice="这是别人看到你的样子", profile=await get_profile(db, user_id))
+    return ProfilePreviewResponse(preview_notice="这是别人看到你的样子", profile=await get_profile(db, user_id, public=True))
 
 
 async def review_media(db: AsyncSession, media_id: int, request: MediaReviewRequest) -> MediaReviewResponse:

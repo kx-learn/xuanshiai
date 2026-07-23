@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.auth import ProfileResponse
+
 
 class DiscoveryFilters(BaseModel):
     gender: Literal[1, 2] | None = None
@@ -118,7 +120,7 @@ class VisitorPage(BaseModel):
 class PublicProfileResponse(BaseModel):
     user_id: int
     card: DiscoveryCard
-    profile: dict | None
+    profile: ProfileResponse | None
     is_vip_viewer: bool
     browse_quota_remaining: int | None
     can_apply: bool
