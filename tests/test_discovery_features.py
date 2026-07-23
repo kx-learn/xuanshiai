@@ -54,3 +54,20 @@ def test_my_overview_is_registered_and_requires_authentication() -> None:
     assert "/api/v1/users/me/overview" in paths
     response = client.get("/api/v1/users/me/overview")
     assert response.status_code == 401
+
+
+def test_superlike_requires_idempotency_key_in_openapi() -> None:
+    operation = client.get("/openapi.json").json()["paths"]["/api/v1/discovery/superlikes/{target_id}"]["post"]
+    parameters = {item["name"].lower(): item for item in operation["parameters"]}
+    assert parameters["idempotency-key"]["required"] is True
+
+
+def test_record_lists_expose_scroll_pagination_contract() -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    for path in (
+        "/api/v1/discovery/visitors",
+        "/api/v1/discovery/favorites",
+        "/api/v1/discovery/applications/incoming",
+        "/api/v1/discovery/applications/outgoing",
+    ):
+        assert "page" in str(paths[path]["get"])

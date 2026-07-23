@@ -188,17 +188,17 @@ GET /api/v1/discovery/search?nickname=小明&tag=摄影
 
 ### `GET /api/v1/discovery/visitors`
 
-无请求参数。普通用户返回：
+查询参数：`page` 1~1000，默认 1；`page_size` 1~50，默认 20。普通用户返回：
 
 ```json
-{"can_view_details":false,"count":3,"items":[]}
+{"can_view_details":false,"count":3,"items":[],"page":1,"page_size":20,"has_more":false}
 ```
 
-VIP 返回 `can_view_details=true` 和访客名片数组。
+VIP 返回 `can_view_details=true`、分页字段和访客名片数组。
 
 ### `GET /api/v1/discovery/favorites`
 
-无请求参数。返回 `DiscoveryCard[]`；没有收藏时返回 `[]`。
+查询参数：`page` 1~1000，默认 1；`page_size` 1~50，默认 20。返回 `items`、`page`、`page_size`、`total`、`has_more`；没有收藏时 `items` 返回 `[]`。
 
 ### `PUT /api/v1/discovery/favorites/{target_id}`
 
@@ -238,11 +238,11 @@ Path `target_id` 为正整数。收藏成功返回：
 
 ### `GET /api/v1/discovery/applications/incoming`
 
-返回当前用户收到的申请数组，最多最近 100 条；无数据返回 `[]`。
+查询参数：`page` 1~1000，默认 1；`page_size` 1~50，默认 20。返回分页对象；无数据时 `items` 返回 `[]`。
 
 ### `GET /api/v1/discovery/applications/outgoing`
 
-返回当前用户发出的申请数组，最多最近 100 条；无数据返回 `[]`。
+查询参数：`page` 1~1000，默认 1；`page_size` 1~50，默认 20。返回分页对象；无数据时 `items` 返回 `[]`。
 
 ### `POST /api/v1/discovery/applications/{application_id}/accept`
 
@@ -263,7 +263,7 @@ Path `target_id` 为正整数。收藏成功返回：
 ### `POST /api/v1/discovery/superlikes/{target_id}`
 
 - Path：`target_id` 正整数
-- 权限：已绑定手机号的登录用户
+- 权限：已绑定手机号、资料完整度 100% 且实名认证通过的登录用户
 - 成功：`201 Created`
 
 普通用户每日 1 次，VIP 每日 3 次。返回：

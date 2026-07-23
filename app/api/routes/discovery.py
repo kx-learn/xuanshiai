@@ -9,12 +9,13 @@ from app.schemas.discovery import (
     ApplicationCreateRequest,
     ApplicationRejectRequest,
     ApplicationResponse,
+    ApplicationPage,
     BrowseHistoryPage,
     DiscoveryFilters,
-    DiscoveryCard,
     DiscoveryPage,
     DiscoverySearch,
     FavoriteResponse,
+    FavoritePage,
     FilterOptionsResponse,
     PublicProfileResponse,
     SavedFilterResponse,
@@ -79,13 +80,13 @@ async def history(page: int = Query(default=1, ge=1, le=1000), page_size: int = 
 
 
 @router.get("/visitors", response_model=VisitorPage, summary="查询谁看过我")
-async def visitor_list(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> VisitorPage:
-    return await visitors(db, current.id)
+async def visitor_list(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> VisitorPage:
+    return await visitors(db, current.id, page, page_size)
 
 
-@router.get("/favorites", response_model=list[DiscoveryCard], summary="查询我的收藏")
-async def favorites(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[DiscoveryCard]:
-    return await list_favorites(db, current.id)
+@router.get("/favorites", response_model=FavoritePage, summary="查询我的收藏")
+async def favorites(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> FavoritePage:
+    return await list_favorites(db, current.id, page, page_size)
 
 
 @router.put("/favorites/{target_id}", response_model=FavoriteResponse, summary="收藏名片")
@@ -103,14 +104,14 @@ async def apply_to_user(target_id: int = Path(..., ge=1), body: ApplicationCreat
     return await create_application(db, current.id, target_id, body)
 
 
-@router.get("/applications/incoming", response_model=list[ApplicationResponse], summary="查询收到的认识申请")
-async def incoming_applications(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[ApplicationResponse]:
-    return await list_applications(db, current.id, incoming=True)
+@router.get("/applications/incoming", response_model=ApplicationPage, summary="查询收到的认识申请")
+async def incoming_applications(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> ApplicationPage:
+    return await list_applications(db, current.id, incoming=True, page=page, page_size=page_size)
 
 
-@router.get("/applications/outgoing", response_model=list[ApplicationResponse], summary="查询发出的认识申请")
-async def outgoing_applications(current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[ApplicationResponse]:
-    return await list_applications(db, current.id, incoming=False)
+@router.get("/applications/outgoing", response_model=ApplicationPage, summary="查询发出的认识申请")
+async def outgoing_applications(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> ApplicationPage:
+    return await list_applications(db, current.id, incoming=False, page=page, page_size=page_size)
 
 
 @router.post("/applications/{application_id}/accept", response_model=ApplicationResponse, summary="同意认识申请")

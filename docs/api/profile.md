@@ -286,9 +286,9 @@ JSON 接口使用 `Content-Type: application/json`；上传接口使用 `multipa
 
 | 接口 | 文件规则 | 业务规则 |
 | --- | --- | --- |
-| `POST /api/v1/users/me/avatar` | JPG/JPEG/PNG，最大 5MB | 覆盖旧头像；转换 WebP 并生成缩略图 |
-| `POST /api/v1/users/me/background` | JPG/JPEG/PNG，最大 5MB | 覆盖旧背景墙 |
-| `POST /api/v1/users/me/photos` | JPG/JPEG/PNG，最大 5MB | 最多 9 张，转换 WebP |
+| `POST /api/v1/users/me/avatar` | JPG/JPEG/PNG，最大 5MB，最多 2500 万像素 | 覆盖旧头像；转换 WebP 并生成缩略图 |
+| `POST /api/v1/users/me/background` | JPG/JPEG/PNG，最大 5MB，最多 2500 万像素 | 覆盖旧背景墙 |
+| `POST /api/v1/users/me/photos` | JPG/JPEG/PNG，最大 5MB，最多 2500 万像素 | 最多 9 张，转换 WebP |
 | `POST /api/v1/users/me/video` | MP4，最大 50MB，最长 30 秒 | 每个用户最多 1 个；服务端使用 ffprobe 检测真实时长 |
 
 图片示例：

@@ -346,6 +346,9 @@ Authorization: Bearer <access_token>
 | `who_can_see_me` | integer/null | 否 | `1` | `1` 所有人，`2` 仅认证，`3` 仅 VIP，`4` 完全私密 | 谁可以在公开流中看到我 |
 | `match_status` | integer/null | 否 | `1` | `1` 公开展示，`2` 委托红娘，`3` 完全私密，`4` 暂停服务，`5` 已脱单 | 当前交友展示状态 |
 | `anonymous_browse_enabled` | boolean/null | 否 | `false` | VIP 无痕浏览能力 | 浏览他人时不写入对方访客记录 |
+| `show_profile` | boolean/null | 否 | `true` | 布尔值 | 是否允许他人查看自己的公开资料；关闭后从首页和他人主页隐藏 |
+| `show_likes` | boolean/null | 否 | `true` | 布尔值 | 是否允许展示自己的喜欢列表；当前版本没有公开他人喜欢列表接口 |
+| `show_posts` | boolean/null | 否 | `true` | 布尔值 | 是否允许自己的动态出现在动态流 |
 | `notify_like` | boolean/null | 否 | `true` | 布尔值 | 喜欢通知开关 |
 | `notify_comment` | boolean/null | 否 | `true` | 布尔值 | 评论通知开关 |
 | `notify_match` | boolean/null | 否 | `true` | 布尔值 | 匹配通知开关 |

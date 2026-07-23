@@ -115,6 +115,9 @@ class VisitorPage(BaseModel):
     can_view_details: bool
     count: int
     items: list[BrowseHistoryItem]
+    page: int
+    page_size: int
+    has_more: bool
 
 
 class PublicProfileResponse(BaseModel):
@@ -131,6 +134,14 @@ class FavoriteResponse(BaseModel):
     is_favorite: bool
 
 
+class FavoritePage(BaseModel):
+    items: list[DiscoveryCard]
+    page: int
+    page_size: int
+    total: int
+    has_more: bool
+
+
 class ApplicationCreateRequest(BaseModel):
     message: str | None = Field(default=None, max_length=255)
 
@@ -143,6 +154,14 @@ class ApplicationResponse(BaseModel):
     status: Literal[0, 1, 2, 3]
     expire_at: datetime | None
     created_at: datetime
+
+
+class ApplicationPage(BaseModel):
+    items: list[ApplicationResponse]
+    page: int
+    page_size: int
+    total: int
+    has_more: bool
 
 
 class ApplicationRejectRequest(BaseModel):

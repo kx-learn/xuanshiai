@@ -66,7 +66,9 @@ async def get_post(db: AsyncSession, user_id: int, post_id: int) -> CommunityPos
         p.video, p.location, p.like_count, p.comment_count, p.created_at,
         EXISTS (SELECT 1 FROM community_like l WHERE l.user_id = :user_id AND l.target_id = p.id AND l.type = 1) AS is_liked
         FROM community_post p JOIN users u ON u.id = p.user_id
-        WHERE p.id = :post_id AND p.status = 1"""), {"user_id": user_id, "post_id": post_id})
+        LEFT JOIN user_privacy pr ON pr.user_id = p.user_id
+        WHERE p.id = :post_id AND p.status = 1
+          AND (p.user_id = :user_id OR COALESCE(pr.show_posts, 1) = 1)"""), {"user_id": user_id, "post_id": post_id})
     row = result.mappings().first()
     if not row:
         raise HTTPException(404, detail="动态不存在")
@@ -75,15 +77,17 @@ async def get_post(db: AsyncSession, user_id: int, post_id: int) -> CommunityPos
 
 async def list_posts(db: AsyncSession, user_id: int, mode: Literal["latest", "following"], page: int, page_size: int) -> CommunityPostPage:
     following_clause = "" if mode == "latest" else " AND EXISTS (SELECT 1 FROM user_favorite f WHERE f.user_id = :user_id AND f.target_user_id = p.user_id AND f.type = 3)"
+    visibility_clause = " AND COALESCE(pr.show_posts, 1) = 1"
     query = text(f"""SELECT p.id, p.user_id, u.nickname, u.avatar, p.content, p.images, p.video, p.location,
         p.like_count, p.comment_count, p.created_at,
         EXISTS (SELECT 1 FROM community_like l WHERE l.user_id = :user_id AND l.target_id = p.id AND l.type = 1) AS is_liked
         FROM community_post p JOIN users u ON u.id = p.user_id
-        WHERE p.status = 1{following_clause}
+        LEFT JOIN user_privacy pr ON pr.user_id = p.user_id
+        WHERE p.status = 1{following_clause}{visibility_clause}
         ORDER BY p.is_top DESC, p.created_at DESC LIMIT :limit OFFSET :offset""")
     params = {"user_id": user_id, "limit": page_size, "offset": (page - 1) * page_size}
     result = await db.execute(query, params)
-    count_sql = text(f"SELECT COUNT(*) FROM community_post p WHERE p.status = 1{following_clause}")
+    count_sql = text(f"SELECT COUNT(*) FROM community_post p LEFT JOIN user_privacy pr ON pr.user_id = p.user_id WHERE p.status = 1{following_clause}{visibility_clause}")
     total = int((await db.execute(count_sql, {"user_id": user_id})).scalar() or 0)
     return CommunityPostPage(items=[_post_response(dict(row)) for row in result.mappings().all()], page=page, page_size=page_size, total=total)
 

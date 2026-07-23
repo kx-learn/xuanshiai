@@ -16,6 +16,7 @@ from typing import Any
 import aiofiles
 from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +40,7 @@ IMAGE_MAX_BYTES = 5 * 1024 * 1024
 VIDEO_MAX_BYTES = 50 * 1024 * 1024
 VIDEO_MAX_SECONDS = 30
 MAX_PHOTOS = 9
+IMAGE_MAX_PIXELS = 25_000_000
 
 COMPLETION_RULES: tuple[tuple[str, str, int], ...] = (
     ("gender", "性别", 7),
@@ -158,6 +160,8 @@ def _image_outputs(data: bytes) -> tuple[bytes, bytes]:
         with Image.open(BytesIO(data)) as source:
             if source.format not in {"JPEG", "PNG"}:
                 raise HTTPException(415, detail="仅支持JPG、JPEG或PNG图片")
+            if source.width * source.height > IMAGE_MAX_PIXELS:
+                raise HTTPException(413, detail="图片像素不能超过2500万")
             source.verify()
         with Image.open(BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
@@ -170,6 +174,8 @@ def _image_outputs(data: bytes) -> tuple[bytes, bytes]:
             thumb_output = BytesIO()
             thumbnail.save(thumb_output, format="WEBP", quality=80, method=6)
             return output.getvalue(), thumb_output.getvalue()
+    except DecompressionBombError as exc:
+        raise HTTPException(413, detail="图片像素过大") from exc
     except (UnidentifiedImageError, OSError) as exc:
         raise HTTPException(415, detail="图片内容无法识别") from exc
 

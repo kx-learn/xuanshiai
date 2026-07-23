@@ -103,6 +103,9 @@ class PrivacyUpdateRequest(BaseModel):
     who_can_see_me: Literal[1, 2, 3, 4] | None = None
     match_status: Literal[1, 2, 3, 4, 5] | None = None
     anonymous_browse_enabled: bool | None = None
+    show_profile: bool | None = None
+    show_likes: bool | None = None
+    show_posts: bool | None = None
     notify_like: bool | None = None
     notify_comment: bool | None = None
     notify_match: bool | None = None
@@ -123,6 +126,9 @@ class PrivacyResponse(BaseModel):
     who_can_see_me: int
     match_status: int
     anonymous_browse_enabled: bool
+    show_profile: bool
+    show_likes: bool
+    show_posts: bool
     notify_like: bool
     notify_comment: bool
     notify_match: bool

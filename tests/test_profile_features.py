@@ -5,7 +5,7 @@ from PIL import Image
 from pydantic import ValidationError
 
 from app.schemas.auth import PhotoOrderRequest, PreferenceUpdateRequest, ProfileUpdateRequest
-from app.services.profile import COMPLETION_RULES, _image_outputs
+from app.services.profile import COMPLETION_RULES, IMAGE_MAX_PIXELS, _image_outputs
 
 
 def test_completion_weights_total_100() -> None:
@@ -57,3 +57,7 @@ def test_image_outputs_are_webp_and_have_thumbnail() -> None:
     with Image.open(BytesIO(thumbnail_data)) as thumbnail:
         assert thumbnail.format == "WEBP"
         assert max(thumbnail.size) <= 480
+
+
+def test_image_pixel_limit_is_explicit() -> None:
+    assert IMAGE_MAX_PIXELS == 25_000_000
