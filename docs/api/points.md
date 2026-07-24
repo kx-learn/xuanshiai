@@ -15,4 +15,6 @@
 
 当前任务奖励：资料完整度 100% 奖励 50 分，实名认证状态为 2 奖励 100 分。任务只能领取一次；余额与流水在同一事务中写入，当前实现只做收入类积分，积分兑换接口按设计预留到后续阶段。
 
+签到和任务奖励可通过 `POINT_CHECKIN_REWARD`、`POINT_PROFILE_COMPLETE_REWARD`、`POINT_REALNAME_VERIFIED_REWARD` 配置。积分商品的每次消耗可通过对应的 `POINT_COST_<功能编码>` 配置，例如 `POINT_COST_EXTRA_APPLY`；配置值会覆盖 `config_point_product.points_cost`，商品的库存、上下架和权益内容仍以数据库为准。
+
 兑换请求体为 `{"product_code":"extra_apply"}`，必须带 `Idempotency-Key`（1~128 字符）。商品由 `config_point_product` 配置，商品类型可为 `goods` 或 `right`；服务端校验库存和余额，在同一事务中扣除积分、写入兑换订单并减少库存。兑换订单初始状态为 0（待履约），实物发货或权益发放由后台履约流程处理；同一用户同一幂等键重复请求不会重复扣分。

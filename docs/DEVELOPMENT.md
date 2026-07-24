@@ -255,6 +255,8 @@ storage/     本地运行时文件
 logs/        本地日志目录
 ```
 
+会员价格和积分数值也支持环境变量配置。`MEMBERSHIP_<套餐>_PRICE`、`MEMBERSHIP_<套餐>_ORIGINAL_PRICE`、`MEMBERSHIP_<套餐>_DAILY_PRICE` 覆盖对应会员套餐的数据库价格字段；`POINT_COST_<功能编码>` 覆盖积分商品每次兑换消耗。未设置的价格继续使用数据库值，未设置的积分商品消耗继续使用 `config_point_product.points_cost`。签到和任务奖励使用 `POINT_CHECKIN_REWARD`、`POINT_PROFILE_COMPLETE_REWARD`、`POINT_REALNAME_VERIFIED_REWARD` 配置。
+
 ## 九、AI 编码工具规则
 
 使用 Codex 或 Claude Code 修改代码前，必须先阅读项目根目录的 `AGENTS.md` 或 `CLAUDE.md`，并遵守其中引用的 `PROJECT_RULES.md`。

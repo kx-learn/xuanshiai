@@ -17,4 +17,6 @@
 
 当前会员权益：普通用户每日申请 3 次、爆灯 1 次、浏览 20 次；VIP 每日申请 10 次、爆灯 3 次、普通浏览不限、可看历史浏览和访客详情。会员不能绕过手机号、资料完整、实名认证、隐私、拉黑和封禁规则。
 
+套餐价格支持环境变量覆盖数据库套餐配置：`MEMBERSHIP_MONTHLY_PRICE`、`MEMBERSHIP_QUARTERLY_PRICE`、`MEMBERSHIP_YEARLY_PRICE`，以及对应的 `_ORIGINAL_PRICE` 和 `_DAILY_PRICE`。未配置时使用 `config_membership_package` 中的值。
+
 微信回调在商户 API v3 密钥和验签适配器配置前返回 `503`，不会把前端请求或未验签回调标记为支付成功，也不会发放会员。

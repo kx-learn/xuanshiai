@@ -5,9 +5,14 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.schemas.points import CheckinResponse, ClaimTaskResponse, InvitePage, InviteItem, PointLedgerItem, PointLedgerPage, PointProduct, PointsSummary, RedeemRequest, RedeemResponse, TaskItem
 
-TASKS = {"profile_complete": ("完成资料", 50), "realname_verified": ("完成实名认证", 100)}
+TASKS = {"profile_complete": ("完成资料", "profile_complete_reward"), "realname_verified": ("完成实名认证", "realname_verified_reward")}
+
+
+def _task_definitions() -> dict[str, tuple[str, int]]:
+    return {code: (title, getattr(settings, f"point_{reward_name}")) for code, (title, reward_name) in TASKS.items()}
 
 
 async def _balance(db: AsyncSession, user_id: int, lock: bool = False) -> int:
@@ -45,21 +50,23 @@ async def checkin(db: AsyncSession, user_id: int) -> CheckinResponse:
         if exists:
             balance = await _balance(db, user_id)
             return CheckinResponse(checked_in=True, points=int(exists["points"] or 0), balance=balance, checkin_date=today.isoformat())
-        balance = await _credit(db, user_id, 5, 1, "每日签到")
-        await db.execute(text("INSERT INTO user_checkin (user_id,checkin_date,points) VALUES (:id,:day,5)"), {"id": user_id, "day": today})
-    return CheckinResponse(checked_in=True, points=5, balance=balance, checkin_date=today.isoformat())
+        reward = settings.point_checkin_reward
+        balance = await _credit(db, user_id, reward, 1, "每日签到")
+        await db.execute(text("INSERT INTO user_checkin (user_id,checkin_date,points) VALUES (:id,:day,:points)"), {"id": user_id, "day": today, "points": reward})
+    return CheckinResponse(checked_in=True, points=reward, balance=balance, checkin_date=today.isoformat())
 
 
 async def tasks(db: AsyncSession, user_id: int) -> list[TaskItem]:
     result = await db.execute(text("SELECT task_code,status,completed_at FROM user_task WHERE user_id=:id"), {"id": user_id})
     saved = {r["task_code"]: r for r in result.mappings()}
-    return [TaskItem(task_code=code, title=title, reward=reward, status=int(saved.get(code, {}).get("status", 1)), completed_at=saved.get(code, {}).get("completed_at")) for code, (title, reward) in TASKS.items()]
+    return [TaskItem(task_code=code, title=title, reward=reward, status=int(saved.get(code, {}).get("status", 1)), completed_at=saved.get(code, {}).get("completed_at")) for code, (title, reward) in _task_definitions().items()]
 
 
 async def claim_task(db: AsyncSession, user_id: int, task_code: str) -> ClaimTaskResponse:
-    if task_code not in TASKS:
+    task_definitions = _task_definitions()
+    if task_code not in task_definitions:
         raise HTTPException(404, detail="任务不存在")
-    title, reward = TASKS[task_code]
+    title, reward = task_definitions[task_code]
     async with db.begin():
         row = (await db.execute(text("SELECT status FROM user_task WHERE user_id=:id AND task_code=:code FOR UPDATE"), {"id": user_id, "code": task_code})).first()
         if row and row[0] == 2:
@@ -86,7 +93,7 @@ async def invites(db: AsyncSession, user_id: int, page: int, page_size: int) -> 
 
 async def products(db: AsyncSession) -> list[PointProduct]:
     result = await db.execute(text("SELECT code,name,product_type,points_cost,value,stock FROM config_point_product WHERE is_active=1 ORDER BY sort,id"))
-    return [PointProduct(code=r["code"], name=r["name"], product_type=r["product_type"], points_cost=r["points_cost"], value=r["value"], stock=r["stock"]) for r in result.mappings()]
+    return [PointProduct(code=r["code"], name=r["name"], product_type=r["product_type"], points_cost=settings.point_cost_override(r["code"], r["points_cost"]), value=r["value"], stock=r["stock"]) for r in result.mappings()]
 
 
 async def redeem(db: AsyncSession, user_id: int, body: RedeemRequest, idempotency_key: str | None) -> RedeemResponse:
@@ -100,15 +107,16 @@ async def redeem(db: AsyncSession, user_id: int, body: RedeemRequest, idempotenc
         product = (await db.execute(text("SELECT id,code,name,points_cost,stock FROM config_point_product WHERE code=:code AND is_active=1 FOR UPDATE"), {"code": body.product_code})).mappings().first()
         if not product:
             raise HTTPException(404, detail="积分商品或权益不存在")
+        points_cost = settings.point_cost_override(product["code"], product["points_cost"])
         if product["stock"] is not None and product["stock"] <= 0:
             raise HTTPException(409, detail="积分商品库存不足")
         before = await _balance(db, user_id, True)
-        if before < product["points_cost"]:
+        if before < points_cost:
             raise HTTPException(409, detail="积分余额不足")
-        after = before - product["points_cost"]
+        after = before - points_cost
         order_no = f"PT{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(5).upper()}"
-        await db.execute(text("INSERT INTO user_points (user_id,type,amount,balance,`desc`) VALUES (:id,4,:amount,:balance,:description)"), {"id": user_id, "amount": -product["points_cost"], "balance": after, "description": f"兑换{product['name']}"})
-        await db.execute(text("INSERT INTO point_redeem_order (order_no,user_id,product_id,product_code,points_cost,status,idempotency_key) VALUES (:order_no,:user_id,:product_id,:product_code,:points_cost,0,:key)"), {"order_no": order_no, "user_id": user_id, "product_id": product["id"], "product_code": product["code"], "points_cost": product["points_cost"], "key": idempotency_key})
+        await db.execute(text("INSERT INTO user_points (user_id,type,amount,balance,`desc`) VALUES (:id,4,:amount,:balance,:description)"), {"id": user_id, "amount": -points_cost, "balance": after, "description": f"兑换{product['name']}"})
+        await db.execute(text("INSERT INTO point_redeem_order (order_no,user_id,product_id,product_code,points_cost,status,idempotency_key) VALUES (:order_no,:user_id,:product_id,:product_code,:points_cost,0,:key)"), {"order_no": order_no, "user_id": user_id, "product_id": product["id"], "product_code": product["code"], "points_cost": points_cost, "key": idempotency_key})
         if product["stock"] is not None:
             await db.execute(text("UPDATE config_point_product SET stock=stock-1 WHERE id=:id"), {"id": product["id"]})
-    return RedeemResponse(order_no=order_no, product_code=product["code"], product_name=product["name"], points_cost=product["points_cost"], status=0, balance=after)
+    return RedeemResponse(order_no=order_no, product_code=product["code"], product_name=product["name"], points_cost=points_cost, status=0, balance=after)

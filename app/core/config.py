@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,34 @@ class Settings(BaseSettings):
     matchmaker_service_default_quota: int = 3
     superlike_daily_free_limit: int = 1
     superlike_daily_vip_limit: int = 3
+
+    # Optional environment overrides for commercial configuration. When unset,
+    # the corresponding database configuration remains the fallback.
+    membership_monthly_price: float | None = Field(default=None, ge=0)
+    membership_quarterly_price: float | None = Field(default=None, ge=0)
+    membership_yearly_price: float | None = Field(default=None, ge=0)
+    membership_monthly_original_price: float | None = Field(default=None, ge=0)
+    membership_quarterly_original_price: float | None = Field(default=None, ge=0)
+    membership_yearly_original_price: float | None = Field(default=None, ge=0)
+    membership_monthly_daily_price: float | None = Field(default=None, ge=0)
+    membership_quarterly_daily_price: float | None = Field(default=None, ge=0)
+    membership_yearly_daily_price: float | None = Field(default=None, ge=0)
+
+    # Rewards are also configurable so all point values have one source.
+    point_checkin_reward: int = Field(default=5, gt=0)
+    point_profile_complete_reward: int = Field(default=50, gt=0)
+    point_realname_verified_reward: int = Field(default=100, gt=0)
+
+    # Per-use costs for point products. Unset values fall back to the product
+    # row, allowing existing database-configured products to keep working.
+    point_cost_extra_apply: int | None = Field(default=None, gt=0)
+    point_cost_extra_superlike: int | None = Field(default=None, gt=0)
+    point_cost_browse_unlock: int | None = Field(default=None, gt=0)
+    point_cost_exposure_card: int | None = Field(default=None, gt=0)
+    point_cost_paper_plane_unlock: int | None = Field(default=None, gt=0)
+    point_cost_profile_detail_unlock: int | None = Field(default=None, gt=0)
+    point_cost_membership_exchange: int | None = Field(default=None, gt=0)
+    point_cost_service_coupon: int | None = Field(default=None, gt=0)
     log_level: str = "INFO"
 
     @property
@@ -81,6 +109,16 @@ class Settings(BaseSettings):
     def is_test_mode(self) -> bool:
         """Return whether development-only providers are allowed."""
         return self.environment in {"development", "testing"}
+
+    def membership_price_override(self, code: str, field: str, fallback: float | None) -> float | None:
+        """Return an environment override for a membership package field."""
+        value = getattr(self, f"membership_{code}_{field}", None)
+        return value if value is not None else fallback
+
+    def point_cost_override(self, code: str, fallback: int) -> int:
+        """Return the configured per-use cost for a point product."""
+        value = getattr(self, f"point_cost_{code}", None)
+        return value if value is not None else fallback
 
     @model_validator(mode="after")
     def validate_test_providers(self) -> "Settings":

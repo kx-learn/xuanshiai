@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.schemas.membership import CreateMembershipOrderRequest, MembershipHistoryItem, MembershipHistoryPage, MembershipOrderResponse, MembershipPackage, MembershipStatus
 
 DEFAULT_RIGHTS = {"apply_daily_limit": 3, "superlike_daily_limit": 1, "browse_daily_limit": 20, "visitor_detail": False, "browse_history_scope": "today"}
@@ -25,7 +26,14 @@ def _rights(value, vip: bool = False) -> dict:
 
 async def list_packages(db: AsyncSession) -> list[MembershipPackage]:
     result = await db.execute(text("SELECT code,name,duration_days,price,original_price,daily_price,badge,rights FROM config_membership_package WHERE is_active=1 ORDER BY sort,id"))
-    return [MembershipPackage(code=r["code"], name=r["name"], duration_days=r["duration_days"], price=float(r["price"]), original_price=float(r["original_price"]) if r["original_price"] is not None else None, daily_price=float(r["daily_price"]) if r["daily_price"] is not None else None, badge=r["badge"], rights=_rights(r["rights"])) for r in result.mappings()]
+    packages = []
+    for row in result.mappings():
+        code = row["code"]
+        price = settings.membership_price_override(code, "price", float(row["price"]))
+        original_price = settings.membership_price_override(code, "original_price", float(row["original_price"]) if row["original_price"] is not None else None)
+        daily_price = settings.membership_price_override(code, "daily_price", float(row["daily_price"]) if row["daily_price"] is not None else None)
+        packages.append(MembershipPackage(code=code, name=row["name"], duration_days=row["duration_days"], price=price, original_price=original_price, daily_price=daily_price, badge=row["badge"], rights=_rights(row["rights"])))
+    return packages
 
 
 async def get_status(db: AsyncSession, user_id: int) -> MembershipStatus:
@@ -53,11 +61,12 @@ async def create_order(db: AsyncSession, user_id: int, body: CreateMembershipOrd
     package = (await db.execute(text("SELECT id,code,name,price FROM config_membership_package WHERE code=:code AND is_active=1"), {"code": body.package_code})).mappings().first()
     if not package:
         raise HTTPException(404, detail="会员套餐不存在或已下架")
+    price = settings.membership_price_override(package["code"], "price", float(package["price"]))
     order_no = f"VIP{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(5).upper()}"
     expire_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=30)
-    await db.execute(text("INSERT INTO payment_order (user_id,order_no,type,product_id,product_type,product_name,amount,pay_type,status,expire_at,idempotency_key) VALUES (:uid,:order_no,1,:pid,1,:code,:amount,1,0,:expire_at,:key)"), {"uid": user_id, "order_no": order_no, "pid": package["id"], "code": package["code"], "amount": package["price"], "expire_at": expire_at, "key": idempotency_key})
+    await db.execute(text("INSERT INTO payment_order (user_id,order_no,type,product_id,product_type,product_name,amount,pay_type,status,expire_at,idempotency_key) VALUES (:uid,:order_no,1,:pid,1,:code,:amount,1,0,:expire_at,:key)"), {"uid": user_id, "order_no": order_no, "pid": package["id"], "code": package["code"], "amount": price, "expire_at": expire_at, "key": idempotency_key})
     await db.commit()
-    return MembershipOrderResponse(order_no=order_no, package_code=package["code"], product_name=package["name"], amount=float(package["price"]), pay_type=1, status=0, expire_at=expire_at, payment_required=True)
+    return MembershipOrderResponse(order_no=order_no, package_code=package["code"], product_name=package["name"], amount=price, pay_type=1, status=0, expire_at=expire_at, payment_required=True)
 
 
 async def get_order(db: AsyncSession, user_id: int, order_no: str) -> MembershipOrderResponse:
