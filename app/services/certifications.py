@@ -2,7 +2,7 @@
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 from app.services.profile import _image_outputs, _media_url, _read_limited, _user_media_dir, _write_bytes
 import uuid
@@ -12,6 +12,7 @@ from app.schemas.certifications import (
     EducationCertificationRequest,
     MarriageCertificationRequest,
 )
+from app.schemas.admin import CertificationReviewRequest, CertificationReviewResponse
 
 
 def _item(kind: str, row: dict, material: str | None) -> dict:
@@ -23,13 +24,14 @@ def _item(kind: str, row: dict, material: str | None) -> dict:
 
 
 async def get_certifications(db: AsyncSession, user_id: int) -> CertificationsResponse:
-    result = await db.execute(text("""SELECT education, education_cert, education_verified,
-        house_cert, house_verified, marriage_cert, marriage_verified, marriage_fail_reason,
+    result = await db.execute(text("""SELECT education, education_cert, education_verified, education_fail_reason,
+        education_submitted_at, education_reviewed_at, house_cert, house_verified, house_fail_reason,
+        house_submitted_at, house_reviewed_at, marriage_cert, marriage_verified, marriage_fail_reason,
         marriage_submitted_at, marriage_reviewed_at, updated_at FROM user_auth WHERE user_id=:id"""), {"id": user_id})
     row = result.mappings().first() or {}
     return CertificationsResponse(
-        education=_item("education", {"status": row.get("education_verified"), "submitted_at": row.get("updated_at")}, row.get("education_cert")),
-        house=_item("house", {"status": row.get("house_verified"), "submitted_at": row.get("updated_at")}, row.get("house_cert")),
+        education=_item("education", {"status": row.get("education_verified"), "submitted_at": row.get("education_submitted_at"), "reviewed_at": row.get("education_reviewed_at"), "fail_reason": row.get("education_fail_reason")}, row.get("education_cert")),
+        house=_item("house", {"status": row.get("house_verified"), "submitted_at": row.get("house_submitted_at"), "reviewed_at": row.get("house_reviewed_at"), "fail_reason": row.get("house_fail_reason")}, row.get("house_cert")),
         marriage=_item("marriage", {"status": row.get("marriage_verified"), "submitted_at": row.get("marriage_submitted_at"), "reviewed_at": row.get("marriage_reviewed_at"), "fail_reason": row.get("marriage_fail_reason")}, row.get("marriage_cert")),
     )
 
@@ -37,7 +39,7 @@ async def get_certifications(db: AsyncSession, user_id: int) -> CertificationsRe
 async def submit_education(db: AsyncSession, user_id: int, body: EducationCertificationRequest) -> CertificationsResponse:
     await db.execute(text("""INSERT INTO user_auth (user_id, education, education_verified)
         VALUES (:id,:education,1) ON DUPLICATE KEY UPDATE education=:education,
-        education_verified=1, updated_at=UTC_TIMESTAMP()"""), {"id": user_id, **body.model_dump()})
+        education_verified=1, education_fail_reason=NULL, education_submitted_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP()"""), {"id": user_id, **body.model_dump()})
     await db.commit()
     return await get_certifications(db, user_id)
 
@@ -51,7 +53,7 @@ async def submit_house(db: AsyncSession, user_id: int, file: UploadFile) -> Cert
     await _write_bytes(image_path, image_data)
     material = _media_url(user_id, image_path.name)
     await db.execute(text("""INSERT INTO user_auth (user_id, house_cert, house_verified)
-        VALUES (:id,:material,1) ON DUPLICATE KEY UPDATE house_cert=:material, house_verified=1, updated_at=UTC_TIMESTAMP()"""), {"id": user_id, "material": material})
+        VALUES (:id,:material,1) ON DUPLICATE KEY UPDATE house_cert=:material, house_verified=1, house_fail_reason=NULL, house_submitted_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP()"""), {"id": user_id, "material": material})
     await db.commit()
     return await get_certifications(db, user_id)
 
@@ -63,3 +65,21 @@ async def submit_marriage(db: AsyncSession, user_id: int, body: MarriageCertific
         marriage_verified=1, marriage_fail_reason=NULL, marriage_submitted_at=UTC_TIMESTAMP()"""), {"id": user_id, "material": material})
     await db.commit()
     return await get_certifications(db, user_id)
+
+
+async def review_certification(db: AsyncSession, user_id: int, kind: str, request: CertificationReviewRequest) -> CertificationReviewResponse:
+    fields = {
+        "education": ("education_verified", "education", "education_fail_reason", "education_reviewed_at"),
+        "house": ("house_verified", "house_cert", "house_fail_reason", "house_reviewed_at"),
+        "marriage": ("marriage_verified", "marriage_cert", "marriage_fail_reason", "marriage_reviewed_at"),
+    }
+    if kind not in fields:
+        raise HTTPException(422, detail="不支持的认证类型")
+    status_field, material_field, reason_field, reviewed_field = fields[kind]
+    result = await db.execute(text(f"SELECT {material_field} FROM user_auth WHERE user_id=:user_id FOR UPDATE"), {"user_id": user_id})
+    row = result.mappings().first()
+    if not row or not row[material_field]:
+        raise HTTPException(404, detail="认证材料不存在")
+    await db.execute(text(f"UPDATE user_auth SET {status_field}=:status, {reason_field}=:reason, {reviewed_field}=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE user_id=:user_id"), {"status": request.status, "reason": request.reason, "user_id": user_id})
+    await db.commit()
+    return CertificationReviewResponse(user_id=user_id, kind=kind, status=request.status, reason=request.reason)

@@ -175,5 +175,9 @@ Content-Type: application/json
 
 ### 2026-07-22
 
+### 2026-07-24
+
+- 新增 `PATCH /api/v1/admin/users/{user_id}/certifications/{kind}/review`，用于审核学历、房产和婚姻认证；`kind` 为 `education`、`house` 或 `marriage`，状态 `2` 为通过、`3` 为失败。
+
 - 新增红娘牵线服务申请查询、分配和处理接口，详见 `docs/api/matchmaker.md`。
 - 红娘申请审核结果新增申请人站内通知，详见 `docs/api/identity.md`。

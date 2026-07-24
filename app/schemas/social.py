@@ -43,6 +43,14 @@ class ChatSessionResponse(BaseModel):
     unread_count: int
 
 
+class ChatSessionPage(BaseModel):
+    items: list[ChatSessionResponse]
+    page: int
+    page_size: int
+    total: int
+    has_more: bool
+
+
 class ChatMessageCreate(BaseModel):
     type: Literal[1, 2, 3, 4, 5, 6] = 1
     content: str | None = Field(default=None, max_length=5000)

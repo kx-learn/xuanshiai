@@ -9,7 +9,7 @@ from app.schemas.social import (
     BlockRequest,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatSessionResponse,
+    ChatSessionPage,
     NotificationPage,
     PrivacyResponse,
     PrivacyUpdateRequest,
@@ -91,8 +91,8 @@ async def cancel_match(target_id: int = Path(..., ge=1), current: CurrentUser = 
     await unmatch(db, current.id, target_id)
 
 
-@router.get("/chat/sessions", response_model=list[ChatSessionResponse], summary="查看聊天会话")
-async def sessions(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[ChatSessionResponse]:
+@router.get("/chat/sessions", response_model=ChatSessionPage, summary="查看聊天会话")
+async def sessions(page: int = Query(1, ge=1, le=1000), page_size: int = Query(20, ge=1, le=50), current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> ChatSessionPage:
     return await list_chat_sessions(db, current.id, page, page_size)
 
 

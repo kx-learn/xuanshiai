@@ -21,10 +21,12 @@ def test_social_routes_are_registered_and_require_authentication() -> None:
     assert "/api/v1/users/{target_id}/like" in paths
     assert "/api/v1/relations/matches" in paths
     assert "/api/v1/chat/sessions/{session_id}/messages" in paths
+    assert "/api/v1/chat/sessions" in paths
     assert "/api/v1/notifications" in paths
     assert "/api/v1/security/reports/{target_id}" in paths
     assert "/api/v1/admin/media/{media_id}/review" in paths
     assert "/api/v1/admin/reports/{report_id}/review" in paths
+    assert "/api/v1/admin/users/{user_id}/certifications/{kind}/review" in paths
 
     response = client.get("/api/v1/relations/matches")
     assert response.status_code == 401

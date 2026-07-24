@@ -163,6 +163,8 @@ Authorization: Bearer <access_token>
 
 #### `GET /api/v1/chat/sessions`
 
+返回分页对象：`items`、`page`、`page_size`、`total`、`has_more`。`items` 仅包含仍匹配、未拉黑且未隐藏的会话。
+
 成功状态 `200 OK`，返回当前用户可访问的聊天会话数组，按最近消息时间倒序。列表只包含有效匹配且未互相拉黑的双方。
 
 查询参数：`page` 为 `1~1000`，默认 `1`；`page_size` 为 `1~50`，默认 `20`。当前代码返回数组，没有 `total` 和 `has_more` 字段；前端可通过返回数量小于 `page_size` 判断是否可能到达末页。

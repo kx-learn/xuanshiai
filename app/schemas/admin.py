@@ -26,3 +26,17 @@ class ReportReviewResponse(BaseModel):
     report_id: int
     status: Literal[1, 2]
     result: str
+
+
+
+
+class CertificationReviewRequest(BaseModel):
+    status: Literal[2, 3]
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class CertificationReviewResponse(BaseModel):
+    user_id: int
+    kind: Literal["education", "house", "marriage"]
+    status: Literal[2, 3]
+    reason: str | None

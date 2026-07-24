@@ -209,9 +209,13 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
                       p.hometown_province_code, p.hometown_city_code, p.hometown_district_code,
                       p.residence_province_code, p.residence_city_code, p.residence_district_code,
                       p.self_intro, p.interest_tags, p.personality_tags, p.mbti, p.tags,
-                      COALESCE(c.score, 0) AS completion_score
+                      COALESCE(c.score, 0) AS completion_score,
+                      COALESCE(pr.hide_school, 0) AS hide_school,
+                      COALESCE(pr.hide_company, 0) AS hide_company,
+                      COALESCE(pr.only_vip_can_see_detail, 0) AS only_vip_can_see_detail
                FROM users u LEFT JOIN user_profile p ON p.user_id = u.id
                LEFT JOIN user_profile_completion c ON c.user_id = u.id
+               LEFT JOIN user_privacy pr ON pr.user_id = u.id
                WHERE u.id = :id"""),
         {"id": user_id},
     )
@@ -234,6 +238,17 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
         # Public profile responses must not expose exact location or income by default.
         for field in ("income", "hometown_province_code", "hometown_city_code", "hometown_district_code", "residence_province_code", "residence_city_code", "residence_district_code"):
             data[field] = None
+        if data["hide_school"]:
+            data["education_level"] = None
+        if data["hide_company"]:
+            data["occupation"] = None
+            data["industry"] = None
+        if data["only_vip_can_see_detail"]:
+            for field in ("height", "occupation", "industry", "education_level", "is_married", "mbti"):
+                data[field] = None
+            data["interest_tags"] = []
+            data["personality_tags"] = []
+            data["tag_selections"] = {}
     return data
 
 
@@ -329,6 +344,8 @@ async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
         "interest_completed": completed["interest"] and completed["personality"],
         "preference_completed": completed["preference"],
         "realname_completed": completed["realname"],
+        "mbti_completed": completed["mbti"],
+        "single_pledge_completed": completed["single_pledge"],
     }
     assignments = ", ".join(f"{key} = :{key}" for key in (*columns, "score"))
     await db.execute(

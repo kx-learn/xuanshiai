@@ -192,6 +192,10 @@ class DatabaseManager:
                 'completion_algorithm_version': "`completion_algorithm_version` varchar(32) DEFAULT NULL",
                 'completion_calculated_at': "`completion_calculated_at` datetime DEFAULT NULL",
             },
+            'user_profile_completion': {
+                'mbti_completed': "`mbti_completed` tinyint NOT NULL DEFAULT '0'",
+                'single_pledge_completed': "`single_pledge_completed` tinyint NOT NULL DEFAULT '0'",
+            },
             'user_privacy': {
                 'anonymous_browse_enabled': "`anonymous_browse_enabled` tinyint NOT NULL DEFAULT '0' COMMENT 'VIP无痕浏览'",
                 'notify_message': "`notify_message` tinyint NOT NULL DEFAULT '1' COMMENT '新消息通知'",
@@ -658,6 +662,8 @@ class DatabaseManager:
                     `interest_completed` tinyint NOT NULL DEFAULT '0',
                     `preference_completed` tinyint NOT NULL DEFAULT '0',
                     `realname_completed` tinyint NOT NULL DEFAULT '0',
+                    `mbti_completed` tinyint NOT NULL DEFAULT '0',
+                    `single_pledge_completed` tinyint NOT NULL DEFAULT '0',
                     `score` decimal(5,2) NOT NULL DEFAULT '0.00',
                     `algorithm_version` varchar(32) DEFAULT NULL,
                     `calculated_at` datetime DEFAULT NULL,

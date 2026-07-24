@@ -13,6 +13,7 @@ from app.schemas.social import (
     BlockRequest,
     ChatMessageCreate,
     ChatMessageResponse,
+    ChatSessionPage,
     ChatSessionResponse,
     NotificationItem,
     NotificationPage,
@@ -109,19 +110,17 @@ async def set_follow(db: AsyncSession, user_id: int, target_id: int, enabled: bo
 
 async def _relation_page(db: AsyncSession, user_id: int, relation_type: str, incoming: bool, page: int, page_size: int) -> RelationPage:
     if relation_type == "match":
-        count_sql = "SELECT COUNT(*) FROM user_match WHERE user_id = :user_id AND status IN (1, 2)"
-        ids_sql = "SELECT target_user_id FROM user_match WHERE user_id = :user_id AND status IN (1, 2) ORDER BY matched_at DESC LIMIT :limit OFFSET :offset"
+        ids_sql = "SELECT target_user_id FROM user_match WHERE user_id = :user_id AND status IN (1, 2) ORDER BY matched_at DESC"
     else:
         type_value = 1 if relation_type == "like" else 3
         field = "target_user_id" if incoming else "user_id"
         selected = "user_id" if incoming else "target_user_id"
-        count_sql = f"SELECT COUNT(*) FROM user_favorite WHERE {field} = :user_id AND type = {type_value}"
-        ids_sql = f"SELECT {selected} AS target_user_id FROM user_favorite WHERE {field} = :user_id AND type = {type_value} ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-    total = int((await db.execute(text(count_sql), {"user_id": user_id})).scalar() or 0)
-    rows = (await db.execute(text(ids_sql), {"user_id": user_id, "limit": page_size, "offset": (page - 1) * page_size})).mappings().all()
+        ids_sql = f"SELECT {selected} AS target_user_id FROM user_favorite WHERE {field} = :user_id AND type = {type_value} ORDER BY created_at DESC"
+    rows = (await db.execute(text(ids_sql), {"user_id": user_id})).mappings().all()
     targets = await _target_rows(db, user_id, [int(row["target_user_id"]) for row in rows])
-    items = [_social_user(targets[int(row["target_user_id"])]) for row in rows if int(row["target_user_id"]) in targets]
-    return RelationPage(items=items, page=page, page_size=page_size, total=total)
+    visible = [_social_user(targets[int(row["target_user_id"])]) for row in rows if int(row["target_user_id"]) in targets]
+    start = (page - 1) * page_size
+    return RelationPage(items=visible[start:start + page_size], page=page, page_size=page_size, total=len(visible))
 
 
 async def list_relation(db: AsyncSession, user_id: int, relation_type: str, incoming: bool, page: int, page_size: int) -> RelationPage:
@@ -148,7 +147,17 @@ async def _session(db: AsyncSession, user_id: int, session_id: int) -> tuple[dic
     return dict(row), target_id
 
 
-async def list_chat_sessions(db: AsyncSession, user_id: int, page: int, page_size: int) -> list[ChatSessionResponse]:
+async def list_chat_sessions(db: AsyncSession, user_id: int, page: int, page_size: int) -> ChatSessionPage:
+    count_result = await db.execute(text("""SELECT COUNT(*) FROM chat_session s
+        WHERE ((s.user1_id = :user_id AND s.is_user1_hidden = 0) OR (s.user2_id = :user_id AND s.is_user2_hidden = 0))
+          AND EXISTS (SELECT 1 FROM user_match um WHERE um.user_id = :user_id
+                      AND um.target_user_id = CASE WHEN s.user1_id = :user_id THEN s.user2_id ELSE s.user1_id END
+                      AND um.status IN (1, 2))
+          AND NOT EXISTS (SELECT 1 FROM user_block ub WHERE (ub.user_id = :user_id
+                      AND ub.target_user_id = CASE WHEN s.user1_id = :user_id THEN s.user2_id ELSE s.user1_id END)
+                   OR (ub.target_user_id = :user_id
+                      AND ub.user_id = CASE WHEN s.user1_id = :user_id THEN s.user2_id ELSE s.user1_id END))"""), {"user_id": user_id})
+    total = int(count_result.scalar() or 0)
     result = await db.execute(text("""SELECT s.*, u.id AS target_id, u.nickname, u.avatar, u.birthday,
         CASE WHEN s.user1_id = :user_id THEN s.unread_count_user1 ELSE s.unread_count_user2 END AS unread_count
         FROM chat_session s JOIN users u ON u.id = CASE WHEN s.user1_id = :user_id THEN s.user2_id ELSE s.user1_id END
@@ -161,7 +170,8 @@ async def list_chat_sessions(db: AsyncSession, user_id: int, page: int, page_siz
                    OR (ub.target_user_id = :user_id
                       AND ub.user_id = CASE WHEN s.user1_id = :user_id THEN s.user2_id ELSE s.user1_id END))
         ORDER BY COALESCE(s.last_message_time, s.created_at) DESC LIMIT :limit OFFSET :offset"""), {"user_id": user_id, "limit": page_size, "offset": (page - 1) * page_size})
-    return [ChatSessionResponse(id=int(row["id"]), target=SocialUser(user_id=int(row["target_id"]), nickname=row["nickname"], avatar=row["avatar"], age=_calculate_age(row["birthday"]) if row["birthday"] else None), last_message=row["last_message"], last_message_time=row["last_message_time"], unread_count=int(row["unread_count"] or 0)) for row in result.mappings().all()]
+    items = [ChatSessionResponse(id=int(row["id"]), target=SocialUser(user_id=int(row["target_id"]), nickname=row["nickname"], avatar=row["avatar"], age=_calculate_age(row["birthday"]) if row["birthday"] else None), last_message=row["last_message"], last_message_time=row["last_message_time"], unread_count=int(row["unread_count"] or 0)) for row in result.mappings().all()]
+    return ChatSessionPage(items=items, page=page, page_size=page_size, total=total, has_more=page * page_size < total)
 
 
 def _message(row: dict[str, Any]) -> ChatMessageResponse:
@@ -274,6 +284,11 @@ async def set_block(db: AsyncSession, user_id: int, target_id: int, request: Blo
 
 async def create_report(db: AsyncSession, user_id: int, target_id: int, request: ReportRequest) -> ReportResponse:
     await _ensure_target(db, user_id, target_id)
+    if request.images:
+        media = await db.execute(text("SELECT file_url FROM user_media WHERE user_id=:user_id AND deleted_at IS NULL"), {"user_id": user_id})
+        owned = {row[0] for row in media.all()}
+        if any(image not in owned for image in request.images):
+            raise HTTPException(422, detail="举报证据必须来自当前用户已上传的媒体")
     result = await db.execute(text("""INSERT INTO user_report (user_id, target_user_id, type, `desc`, images)
         VALUES (:user_id, :target_id, :type, :description, :images)"""), {"user_id": user_id, "target_id": target_id, "type": request.type, "description": request.description, "images": json.dumps(request.images, ensure_ascii=False)})
     await db.commit()
