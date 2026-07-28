@@ -219,6 +219,9 @@ class DatabaseManager:
                 'mbti_completed': "`mbti_completed` tinyint NOT NULL DEFAULT '0'",
                 'single_pledge_completed': "`single_pledge_completed` tinyint NOT NULL DEFAULT '0'",
             },
+            'chat_message': {
+                'client_message_id': "`client_message_id` varchar(128) DEFAULT NULL COMMENT '客户端消息幂等键'",
+            },
             'user_privacy': {
                 'anonymous_browse_enabled': "`anonymous_browse_enabled` tinyint NOT NULL DEFAULT '0' COMMENT 'VIP无痕浏览'",
                 'notify_message': "`notify_message` tinyint NOT NULL DEFAULT '1' COMMENT '新消息通知'",
@@ -287,6 +290,7 @@ class DatabaseManager:
             self._ensure_table_columns(cursor, f'`{table_name}`', columns)
         self._ensure_matchmaker_application_index(cursor)
         self._ensure_payment_order_idempotency_index(cursor)
+        self._ensure_chat_message_client_id_index(cursor)
         self._ensure_community_post_feed_indexes(cursor)
         self._ensure_idempotency_contract(cursor)
 
@@ -381,6 +385,35 @@ class DatabaseManager:
             """)
         except pymysql.MySQLError as exc:
             logger.warning(f"payment_order 幂等键唯一索引迁移失败: {exc}")
+
+    def _ensure_chat_message_client_id_index(self, cursor):
+        """Keep retried chat sends idempotent without changing old null-key rows."""
+        try:
+            cursor.execute("""
+                SELECT INDEX_NAME FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'
+                  AND INDEX_NAME = 'uk_chat_message_client_id'
+            """)
+            if cursor.fetchone():
+                return
+            cursor.execute("""
+                SELECT session_id, from_user_id, client_message_id, COUNT(*) AS duplicate_count
+                FROM chat_message
+                WHERE client_message_id IS NOT NULL
+                GROUP BY session_id, from_user_id, client_message_id
+                HAVING COUNT(*) > 1
+                LIMIT 1
+            """)
+            if cursor.fetchone():
+                logger.warning("chat_message 存在重复客户端消息键，跳过幂等索引迁移，请先清理历史数据")
+                return
+            cursor.execute("""
+                ALTER TABLE `chat_message`
+                ADD UNIQUE KEY `uk_chat_message_client_id`
+                (`session_id`, `from_user_id`, `client_message_id`)
+            """)
+        except pymysql.MySQLError as exc:
+            logger.warning(f"chat_message 幂等键唯一索引迁移失败: {exc}")
 
     def _ensure_matchmaker_application_index(self, cursor):
         """将旧版红娘申请的单用户唯一索引升级为单用户单申请类型唯一索引。"""
@@ -477,6 +510,8 @@ class DatabaseManager:
             ('chat_session', 'user2_id'),
             ('chat_message', 'from_user_id'),
             ('chat_message', 'to_user_id'),
+            ('message_contact_exchange', 'requester_id'),
+            ('message_contact_exchange', 'recipient_id'),
             ('community_post', 'user_id'),
             ('community_comment', 'user_id'),
             ('community_like', 'user_id'),
@@ -499,6 +534,8 @@ class DatabaseManager:
             ('user_behavior_event', 'user_id'),
             ('user_behavior_event', 'target_user_id'),
             ('user_mbti_result', 'user_id'),
+            ('user_mbti_assessment_session', 'user_id'),
+            ('user_mbti_profile_source', 'user_id'),
             ('user_love_style_result', 'user_id'),
             ('user_match_score_history', 'user_id'),
             ('user_match_score_history', 'target_user_id'),
@@ -1303,6 +1340,7 @@ class DatabaseManager:
                     `type` tinyint DEFAULT '1' COMMENT '1文本 2图片 3语音 4视频 5小程序卡片 6系统消息',
                     `content` text COMMENT '消息内容',
                     `media_url` varchar(500) DEFAULT NULL COMMENT '媒体文件URL',
+                    `client_message_id` varchar(128) DEFAULT NULL COMMENT '客户端消息幂等键',
                     `is_read` tinyint DEFAULT '0' COMMENT '是否已读 0否 1是',
                     `read_at` datetime DEFAULT NULL,
                     `revoked_at` datetime DEFAULT NULL COMMENT '撤回时间（NULL表示未撤回）',
@@ -1311,8 +1349,30 @@ class DatabaseManager:
                     PRIMARY KEY (`id`),
                     KEY `idx_session` (`session_id`),
                     KEY `idx_from_to` (`from_user_id`,`to_user_id`),
-                    KEY `idx_created_at` (`created_at`)
+                    KEY `idx_created_at` (`created_at`),
+                    UNIQUE KEY `uk_chat_message_client_id` (`session_id`,`from_user_id`,`client_message_id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='聊天消息'
+            """,
+
+            # ============================================
+            # 21.1 已匹配用户联系方式交换
+            # ============================================
+            'message_contact_exchange': """
+                CREATE TABLE IF NOT EXISTS `message_contact_exchange` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `session_id` bigint unsigned NOT NULL,
+                    `requester_id` bigint unsigned NOT NULL,
+                    `recipient_id` bigint unsigned NOT NULL,
+                    `contact_type` varchar(16) NOT NULL COMMENT 'phone|wechat',
+                    `contact_value_encrypted` text NOT NULL COMMENT '加密后的联系方式',
+                    `status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'pending|accepted|rejected',
+                    `responded_at` datetime DEFAULT NULL,
+                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    KEY `idx_contact_exchange_recipient` (`recipient_id`,`status`,`created_at`),
+                    KEY `idx_contact_exchange_session` (`session_id`,`created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='聊天联系方式交换确认'
             """,
 
             # ============================================
@@ -1985,6 +2045,46 @@ class DatabaseManager:
                     UNIQUE KEY `uk_user_date` (`user_id`,`test_date`),
                     KEY `idx_mbti_type` (`mbti_type`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MBTI测试结果'
+            """,
+
+            # ============================================
+            # 46.1 MBTI 测评会话快照
+            # ============================================
+            'user_mbti_assessment_session': """
+                CREATE TABLE IF NOT EXISTS `user_mbti_assessment_session` (
+                    `id` varchar(128) NOT NULL,
+                    `user_id` bigint unsigned NOT NULL,
+                    `definition_id` varchar(64) NOT NULL,
+                    `definition_version` varchar(64) NOT NULL,
+                    `result_copy_version` varchar(64) NOT NULL,
+                    `status` varchar(16) NOT NULL COMMENT 'in_progress|completed|discarded',
+                    `question_snapshot` json NOT NULL COMMENT '题文、选项、维度与极性固定快照',
+                    `answers` json DEFAULT NULL COMMENT '按题目 ID 保存的答案',
+                    `result_json` json DEFAULT NULL COMMENT '完成后不可变的结果快照',
+                    `completed_at` datetime(6) DEFAULT NULL,
+                    `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                    `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+                    PRIMARY KEY (`id`),
+                    KEY `idx_mbti_session_user_status` (`user_id`,`status`,`created_at`),
+                    KEY `idx_mbti_session_definition` (`definition_id`,`definition_version`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MBTI测评会话与固定题目快照'
+            """,
+
+            # ============================================
+            # 46.2 当前 MBTI 资料来源
+            # ============================================
+            'user_mbti_profile_source': """
+                CREATE TABLE IF NOT EXISTS `user_mbti_profile_source` (
+                    `user_id` bigint unsigned NOT NULL,
+                    `mbti_type` varchar(8) NOT NULL,
+                    `source` varchar(16) NOT NULL COMMENT 'assessment|self_reported',
+                    `assessment_version` varchar(64) DEFAULT NULL,
+                    `result_id` varchar(128) DEFAULT NULL,
+                    `confirmed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`user_id`),
+                    KEY `idx_mbti_profile_source_type` (`mbti_type`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资料页当前MBTI来源'
             """,
 
             # ============================================

@@ -55,6 +55,7 @@ class ChatMessageCreate(BaseModel):
     type: Literal[1, 2, 3, 4, 5, 6] = 1
     content: str | None = Field(default=None, max_length=5000)
     media_url: str | None = Field(default=None, max_length=500)
+    client_message_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_content(self):
@@ -75,6 +76,7 @@ class ChatMessageResponse(BaseModel):
     type: int
     content: str | None
     media_url: str | None
+    client_message_id: str | None = None
     is_read: bool
     revoked: bool
     created_at: datetime

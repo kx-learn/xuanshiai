@@ -51,5 +51,11 @@ def encrypt_sensitive(value: str) -> str:
     return Fernet(key).encrypt(value.encode()).decode()
 
 
+def decrypt_sensitive(value: str) -> str:
+    """Decrypt a value that was stored through ``encrypt_sensitive``."""
+    key = base64.urlsafe_b64encode(hashlib.sha256(settings.secret_key.encode()).digest())
+    return Fernet(key).decrypt(value.encode()).decode()
+
+
 def mask_id_card(value: str) -> str:
     return f"{value[:4]}{'*' * max(0, len(value) - 8)}{value[-4:]}"
