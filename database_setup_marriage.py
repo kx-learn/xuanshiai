@@ -17,9 +17,24 @@ FAIL_CLOSED_COMMUNITY_COLUMNS = frozenset(
         ("user_profile", "community_city_updated_at"),
         ("community_post", "visibility"),
         ("community_post", "declaration"),
+        ("community_post", "deleted_at"),
+        ("community_post", "moderation_status"),
+        ("community_post", "moderation_report_id"),
+        ("community_comment", "root_id"),
+        ("community_comment", "deleted_at"),
+        ("community_comment", "moderation_status"),
+        ("community_comment", "moderation_report_id"),
         ("user_report", "target_type"),
         ("user_report", "target_id"),
+        ("user_report", "action"),
+        ("user_report", "reviewed_by"),
+        ("user_report", "reviewed_at"),
+        ("user_privacy", "notify_follow"),
+        ("user_privacy", "notify_message"),
+        ("user_notification", "target_type"),
+        ("user_notification", "target_id"),
         ("paper_plane", "moderation_status"),
+        ("paper_plane", "moderation_report_id"),
         ("paper_plane", "voice_url"),
         ("paper_plane", "voice_duration_sec"),
     }
@@ -225,6 +240,7 @@ class DatabaseManager:
             'user_privacy': {
                 'anonymous_browse_enabled': "`anonymous_browse_enabled` tinyint NOT NULL DEFAULT '0' COMMENT 'VIP无痕浏览'",
                 'notify_message': "`notify_message` tinyint NOT NULL DEFAULT '1' COMMENT '新消息通知'",
+                'notify_follow': "`notify_follow` tinyint NOT NULL DEFAULT '1' COMMENT '关注通知'",
                 'privacy_version': "`privacy_version` varchar(32) DEFAULT NULL",
                 'privacy_updated_at': "`privacy_updated_at` datetime DEFAULT NULL",
                 'show_profile': "`show_profile` tinyint NOT NULL DEFAULT '1' COMMENT '是否展示个人资料'",
@@ -234,15 +250,59 @@ class DatabaseManager:
             'community_post': {
                 'visibility': "`visibility` tinyint NOT NULL DEFAULT '0' COMMENT '0公开 1仅好友 2仅自己'",
                 'declaration': "`declaration` varchar(32) NOT NULL DEFAULT '' COMMENT '内容声明'",
+                'deleted_at': "`deleted_at` datetime DEFAULT NULL COMMENT '用户软删除时间'",
+                'moderation_status': "`moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 0审核中 2管理员下架'",
+                'moderation_report_id': "`moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID'",
+                'moderation_reason': "`moderation_reason` varchar(255) DEFAULT NULL",
+                'moderated_by': "`moderated_by` bigint unsigned DEFAULT NULL",
+                'moderated_at': "`moderated_at` datetime DEFAULT NULL",
+            },
+            'community_comment': {
+                'root_id': "`root_id` bigint unsigned DEFAULT NULL COMMENT '一级根评论ID；一级评论为空'",
+                'deleted_at': "`deleted_at` datetime DEFAULT NULL COMMENT '用户软删除时间'",
+                'moderation_status': "`moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 0审核中 2管理员下架'",
+                'moderation_report_id': "`moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID'",
+                'moderation_reason': "`moderation_reason` varchar(255) DEFAULT NULL",
+                'moderated_by': "`moderated_by` bigint unsigned DEFAULT NULL",
+                'moderated_at': "`moderated_at` datetime DEFAULT NULL",
+            },
+            'user_notification': {
+                'target_type': "`target_type` varchar(32) DEFAULT NULL COMMENT '前端导航目标类型'",
+                'target_id': "`target_id` bigint unsigned DEFAULT NULL COMMENT '前端导航目标ID'",
             },
             'user_report': {
                 'target_type': "`target_type` varchar(32) NOT NULL DEFAULT 'user' COMMENT 'user|post|comment|paper_plane'",
                 'target_id': "`target_id` bigint unsigned DEFAULT NULL COMMENT '内容对象ID；user 举报可为空或等于 target_user_id'",
+                'action': "`action` varchar(32) NOT NULL DEFAULT 'none' COMMENT 'none|hide_content|restore_content|dismiss'",
+                'reviewed_by': "`reviewed_by` bigint unsigned DEFAULT NULL COMMENT '原举报审核人'",
+                'reviewed_at': "`reviewed_at` datetime DEFAULT NULL COMMENT '举报审核时间'",
             },
             'paper_plane': {
                 'moderation_status': "`moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 2下架（与 lifecycle status 分离）'",
+                'moderation_report_id': "`moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID'",
                 'voice_url': "`voice_url` varchar(500) DEFAULT NULL COMMENT '语音地址'",
                 'voice_duration_sec': "`voice_duration_sec` int DEFAULT NULL COMMENT '语音时长秒'",
+            },
+            'community_media': {
+                'moderation_status': "`moderation_status` varchar(24) NOT NULL DEFAULT 'pending' COMMENT 'pending/approved/rejected/hidden'",
+                'moderation_reason': "`moderation_reason` varchar(255) DEFAULT NULL",
+                'moderated_by': "`moderated_by` bigint unsigned DEFAULT NULL",
+                'moderated_at': "`moderated_at` datetime DEFAULT NULL",
+            },
+            'paper_plane_reply': {
+                'moderation_status': "`moderation_status` varchar(24) NOT NULL DEFAULT 'approved' COMMENT 'pending/approved/rejected/hidden'",
+                'moderation_reason': "`moderation_reason` varchar(255) DEFAULT NULL",
+                'moderated_by': "`moderated_by` bigint unsigned DEFAULT NULL",
+                'moderated_at': "`moderated_at` datetime DEFAULT NULL",
+            },
+            'paper_plane_message': {
+                'moderation_status': "`moderation_status` varchar(24) NOT NULL DEFAULT 'approved' COMMENT 'pending/approved/rejected/hidden'",
+                'moderation_reason': "`moderation_reason` varchar(255) DEFAULT NULL",
+                'moderated_by': "`moderated_by` bigint unsigned DEFAULT NULL",
+                'moderated_at': "`moderated_at` datetime DEFAULT NULL",
+            },
+            'config_sensitive_word': {
+                'action': "`action` varchar(24) NOT NULL DEFAULT 'replace' COMMENT 'reject/replace/manual_review'",
             },
             'user_login_log': {
                 'login_status': "`login_status` tinyint NOT NULL DEFAULT '1' COMMENT '1成功 2失败'",
@@ -288,31 +348,63 @@ class DatabaseManager:
 
         for table_name, columns in required_columns.items():
             self._ensure_table_columns(cursor, f'`{table_name}`', columns)
+        self._ensure_community_moderation_status_types(cursor)
         self._ensure_matchmaker_application_index(cursor)
         self._ensure_payment_order_idempotency_index(cursor)
         self._ensure_chat_message_client_id_index(cursor)
         self._ensure_community_post_feed_indexes(cursor)
         self._ensure_idempotency_contract(cursor)
 
+    def _ensure_community_moderation_status_types(self, cursor):
+        """Migrate pre-merge string states on posts/comments to numeric states."""
+        for table_name in ("community_post", "community_comment"):
+            try:
+                cursor.execute(
+                    f"""UPDATE `{table_name}`
+                    SET moderation_status = CASE moderation_status
+                        WHEN 'pending' THEN 0
+                        WHEN 'approved' THEN 1
+                        WHEN 'replaced' THEN 1
+                        WHEN 'rejected' THEN 2
+                        WHEN 'hidden' THEN 2
+                        WHEN 'deleted' THEN 2
+                        ELSE moderation_status
+                    END"""
+                )
+                cursor.execute(
+                    f"""ALTER TABLE `{table_name}`
+                    MODIFY COLUMN `moderation_status` tinyint NOT NULL DEFAULT 1
+                    COMMENT '1 normal, 0 pending, 2 hidden'"""
+                )
+            except Exception as exc:
+                logger.warning("Failed to migrate %s moderation_status: %s", table_name, exc)
+                if (table_name, "moderation_status") in FAIL_CLOSED_COMMUNITY_COLUMNS:
+                    raise
+
     def _ensure_community_post_feed_indexes(self, cursor):
         """为社区动态流补齐复合索引，避免 status + 排序走 filesort。"""
         indexes = {
-            'idx_status_top_created': '(`status`,`is_top`,`created_at`)',
-            'idx_status_like_created': '(`status`,`like_count`,`created_at`)',
+            'idx_status_top_created': ('community_post', '(`status`,`is_top`,`created_at`)'),
+            'idx_status_like_created': ('community_post', '(`status`,`like_count`,`created_at`)'),
+            'idx_post_visibility_state': (
+                'community_post',
+                '(`status`,`moderation_status`,`deleted_at`,`created_at`)',
+            ),
+            'idx_root_created': ('community_comment', '(`root_id`,`id`)'),
         }
-        for index_name, columns in indexes.items():
+        for index_name, (table_name, columns) in indexes.items():
             try:
                 cursor.execute(f"""
                     SELECT INDEX_NAME
                     FROM information_schema.STATISTICS
                     WHERE TABLE_SCHEMA = DATABASE()
-                      AND TABLE_NAME = 'community_post'
+                      AND TABLE_NAME = '{table_name}'
                       AND INDEX_NAME = '{index_name}'
                 """)
                 if cursor.fetchone():
                     continue
                 cursor.execute(
-                    f"ALTER TABLE `community_post` ADD KEY `{index_name}` {columns}"
+                    f"ALTER TABLE `{table_name}` ADD KEY `{index_name}` {columns}"
                 )
                 logger.debug(f"✅ 社区动态索引 {index_name} 已添加")
             except pymysql.MySQLError as exc:
@@ -439,25 +531,37 @@ class DatabaseManager:
         except pymysql.MySQLError as exc:
             logger.warning(f"⚠️ 红娘申请索引升级失败，请检查历史重复数据: {exc}")
 
-    def _add_foreign_key(self, cursor, table_name: str, column: str, ref_table: str = 'users', ref_column: str = 'id'):
+    def _add_foreign_key(
+        self,
+        cursor,
+        table_name: str,
+        column: str,
+        ref_table: str = 'users',
+        ref_column: str = 'id',
+        on_delete: str = 'CASCADE',
+    ):
         """添加外键约束（幂等）"""
         try:
             fk_name = f"fk_{table_name}_{column}"
             cursor.execute(f"""
-                SELECT CONSTRAINT_NAME
-                FROM information_schema.TABLE_CONSTRAINTS
+                SELECT CONSTRAINT_NAME, DELETE_RULE
+                FROM information_schema.REFERENTIAL_CONSTRAINTS
                 WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME = '{table_name}'
-                AND CONSTRAINT_TYPE = 'FOREIGN KEY'
                 AND CONSTRAINT_NAME = '{fk_name}'
             """)
-            if cursor.fetchone():
+            existing = cursor.fetchone()
+            if existing and str(existing.get('DELETE_RULE') or '').upper() == on_delete:
                 return
+            if existing:
+                cursor.execute(
+                    f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{fk_name}`"
+                )
 
             cursor.execute(f"""
                 ALTER TABLE `{table_name}`
                 ADD CONSTRAINT `{fk_name}`
-                FOREIGN KEY (`{column}`) REFERENCES `{ref_table}`(`{ref_column}`) ON DELETE CASCADE
+                FOREIGN KEY (`{column}`) REFERENCES `{ref_table}`(`{ref_column}`) ON DELETE {on_delete}
             """)
             logger.debug(f"✅ 外键 {fk_name} 已添加")
         except pymysql.MySQLError as e:
@@ -486,6 +590,7 @@ class DatabaseManager:
             ('user_block', 'target_user_id'),
             ('user_report', 'user_id'),
             ('user_report', 'target_user_id'),
+            ('report_appeal', 'appellant_user_id'),
             ('user_favorite', 'user_id'),
             ('user_favorite', 'target_user_id'),
             ('user_browse_history', 'user_id'),
@@ -545,8 +650,24 @@ class DatabaseManager:
         for table, column in user_id_tables:
             self._add_foreign_key(cursor, table, column)
 
+        self._add_foreign_key(
+            cursor, 'user_report', 'reviewed_by', on_delete='SET NULL'
+        )
+        self._add_foreign_key(
+            cursor, 'report_appeal', 'reviewed_by', on_delete='SET NULL'
+        )
+
         # 登录日志中的会话关联允许为空，保留历史日志兼容性。
         self._add_foreign_key(cursor, 'user_login_log', 'session_id', 'user_session')
+        self._add_foreign_key(cursor, 'report_appeal', 'report_id', 'user_report')
+        for table_name in ('community_post', 'community_comment', 'paper_plane'):
+            self._add_foreign_key(
+                cursor,
+                table_name,
+                'moderation_report_id',
+                'user_report',
+                on_delete='SET NULL',
+            )
 
         # 社区相关外键
         try:
@@ -708,6 +829,18 @@ class DatabaseManager:
                     UNIQUE KEY `uk_user_role` (`user_id`,`role_code`),
                     KEY `idx_role_status` (`role_code`,`status`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户平台角色'
+            """,
+            'admin_permission': """
+                CREATE TABLE IF NOT EXISTS `admin_permission` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `user_id` bigint unsigned NOT NULL,
+                    `permission_code` varchar(64) NOT NULL,
+                    `granted_by` bigint unsigned DEFAULT NULL,
+                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_admin_permission` (`user_id`,`permission_code`),
+                    KEY `idx_admin_permission_user` (`user_id`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='管理员权限'
             """,
 
             # ============================================
@@ -940,6 +1073,8 @@ class DatabaseManager:
                     `match_status` tinyint DEFAULT '1' COMMENT '交友状态 1公开展示 2委托红娘 3完全私密 4暂停服务 5已脱单',
                     `notify_like` tinyint DEFAULT '1' COMMENT '点赞通知 0关闭 1开启',
                     `notify_comment` tinyint DEFAULT '1' COMMENT '评论通知',
+                    `notify_follow` tinyint DEFAULT '1' COMMENT '关注通知',
+                    `notify_message` tinyint NOT NULL DEFAULT '1' COMMENT '新消息通知',
                     `notify_match` tinyint DEFAULT '1' COMMENT '匹配成功通知',
                     `notify_apply` tinyint DEFAULT '1' COMMENT '牵线申请通知',
                     `notify_system` tinyint DEFAULT '1' COMMENT '系统消息通知',
@@ -997,6 +1132,9 @@ class DatabaseManager:
                     `images` json DEFAULT NULL COMMENT '截图证据',
                     `status` tinyint DEFAULT '0' COMMENT '0待处理 1已处理 2驳回',
                     `result` varchar(255) DEFAULT NULL COMMENT '处理结果',
+                    `action` varchar(32) NOT NULL DEFAULT 'none' COMMENT 'none|hide_content|restore_content|dismiss',
+                    `reviewed_by` bigint unsigned DEFAULT NULL COMMENT '原举报审核人',
+                    `reviewed_at` datetime DEFAULT NULL COMMENT '举报审核时间',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
@@ -1004,6 +1142,25 @@ class DatabaseManager:
                     KEY `idx_target_object` (`target_type`, `target_id`),
                     KEY `idx_status_created` (`status`, `created_at`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报记录'
+            """,
+
+            'report_appeal': """
+                CREATE TABLE IF NOT EXISTS `report_appeal` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `report_id` bigint unsigned NOT NULL,
+                    `appellant_user_id` bigint unsigned NOT NULL,
+                    `reason` varchar(1000) NOT NULL,
+                    `status` tinyint NOT NULL DEFAULT '0' COMMENT '0待复审 1申诉通过 2申诉驳回',
+                    `result` varchar(255) DEFAULT NULL,
+                    `reviewed_by` bigint unsigned DEFAULT NULL,
+                    `reviewed_at` datetime DEFAULT NULL,
+                    `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_report_id` (`report_id`),
+                    KEY `idx_appeal_status_created` (`status`,`created_at`),
+                    KEY `idx_appeal_user_created` (`appellant_user_id`,`created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报申诉与独立复审记录'
             """,
 
             # ============================================
@@ -1050,6 +1207,8 @@ class DatabaseManager:
                     `payload` json DEFAULT NULL,
                     `related_user_id` bigint unsigned DEFAULT NULL,
                     `related_id` bigint unsigned DEFAULT NULL,
+                    `target_type` varchar(32) DEFAULT NULL COMMENT '前端导航目标类型',
+                    `target_id` bigint unsigned DEFAULT NULL COMMENT '前端导航目标ID',
                     `is_read` tinyint NOT NULL DEFAULT '0',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     `read_at` datetime DEFAULT NULL,
@@ -1389,10 +1548,16 @@ class DatabaseManager:
                     `location` varchar(128) DEFAULT NULL COMMENT '位置信息',
                     `visibility` tinyint NOT NULL DEFAULT '0' COMMENT '0公开 1仅好友 2仅自己',
                     `declaration` varchar(32) NOT NULL DEFAULT '' COMMENT '内容声明',
+                    `moderation_reason` varchar(255) DEFAULT NULL,
+                    `moderated_by` bigint unsigned DEFAULT NULL,
+                    `moderated_at` datetime DEFAULT NULL,
                     `view_count` int DEFAULT '0' COMMENT '浏览次数',
                     `like_count` int DEFAULT '0' COMMENT '点赞数',
                     `comment_count` int DEFAULT '0' COMMENT '评论数',
                     `status` tinyint DEFAULT '1' COMMENT '1正常 2审核中 3违规下架',
+                    `deleted_at` datetime DEFAULT NULL COMMENT '用户软删除时间',
+                    `moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 0审核中 2管理员下架',
+                    `moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID',
                     `is_top` tinyint DEFAULT '0' COMMENT '是否置顶 0否 1是',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1402,6 +1567,7 @@ class DatabaseManager:
                     KEY `idx_created` (`created_at`),
                     KEY `idx_status_top_created` (`status`,`is_top`,`created_at`),
                     KEY `idx_status_like_created` (`status`,`like_count`,`created_at`)
+                    ,KEY `idx_post_visibility_state` (`status`,`moderation_status`,`deleted_at`,`created_at`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='社区动态'
             """,
 
@@ -1414,14 +1580,22 @@ class DatabaseManager:
                     `post_id` bigint unsigned NOT NULL,
                     `user_id` bigint unsigned NOT NULL,
                     `parent_id` bigint unsigned DEFAULT NULL COMMENT '父评论ID（支持二级回复）',
+                    `root_id` bigint unsigned DEFAULT NULL COMMENT '一级根评论ID；一级评论为空',
                     `content` varchar(500) NOT NULL,
+                    `moderation_reason` varchar(255) DEFAULT NULL,
+                    `moderated_by` bigint unsigned DEFAULT NULL,
+                    `moderated_at` datetime DEFAULT NULL,
                     `like_count` int DEFAULT '0',
-                    `status` tinyint DEFAULT '1' COMMENT '1正常 2违规',
+                    `status` tinyint DEFAULT '1' COMMENT '兼容生命周期状态；新删除使用 deleted_at',
+                    `deleted_at` datetime DEFAULT NULL COMMENT '用户软删除时间',
+                    `moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 0审核中 2管理员下架',
+                    `moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
                     KEY `idx_post` (`post_id`),
                     KEY `idx_user` (`user_id`),
                     KEY `idx_parent` (`parent_id`)
+                    ,KEY `idx_root_created` (`root_id`,`id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='动态评论'
             """,
 
@@ -1488,6 +1662,10 @@ class DatabaseManager:
                     `mime_type` varchar(128) DEFAULT NULL,
                     `file_size` bigint unsigned DEFAULT NULL,
                     `duration_seconds` smallint unsigned DEFAULT NULL,
+                    `moderation_status` varchar(24) NOT NULL DEFAULT 'pending' COMMENT 'pending/approved/rejected/hidden',
+                    `moderation_reason` varchar(255) DEFAULT NULL,
+                    `moderated_by` bigint unsigned DEFAULT NULL,
+                    `moderated_at` datetime DEFAULT NULL,
                     `status` varchar(16) NOT NULL DEFAULT 'ready' COMMENT 'ready|bound|deleted',
                     `deleted_at` datetime DEFAULT NULL,
                     `expire_at` datetime DEFAULT NULL COMMENT '未绑定媒体过期时间',
@@ -1537,6 +1715,7 @@ class DatabaseManager:
                     `like_count` int DEFAULT '0',
                     `status` tinyint DEFAULT '1' COMMENT '1待回应 2已回应 3已过期',
                     `moderation_status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 2下架（与 lifecycle status 分离）',
+                    `moderation_report_id` bigint unsigned DEFAULT NULL COMMENT '当前下架来源举报ID',
                     `expire_at` datetime DEFAULT NULL COMMENT '过期时间（默认24小时）',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
@@ -1556,6 +1735,10 @@ class DatabaseManager:
                     `plane_id` bigint unsigned NOT NULL,
                     `user_id` bigint unsigned NOT NULL COMMENT '回复者',
                     `content` text NOT NULL,
+                    `moderation_status` varchar(24) NOT NULL DEFAULT 'approved' COMMENT 'pending/approved/rejected/hidden',
+                    `moderation_reason` varchar(255) DEFAULT NULL,
+                    `moderated_by` bigint unsigned DEFAULT NULL,
+                    `moderated_at` datetime DEFAULT NULL,
                     `is_anonymous` tinyint DEFAULT '1',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
@@ -1597,6 +1780,10 @@ class DatabaseManager:
                     `conversation_id` bigint unsigned NOT NULL,
                     `from_user_id` bigint unsigned NOT NULL,
                     `content` text,
+                    `moderation_status` varchar(24) NOT NULL DEFAULT 'approved' COMMENT 'pending/approved/rejected/hidden',
+                    `moderation_reason` varchar(255) DEFAULT NULL,
+                    `moderated_by` bigint unsigned DEFAULT NULL,
+                    `moderated_at` datetime DEFAULT NULL,
                     `type` tinyint DEFAULT '1' COMMENT '1文本 3语音',
                     `media_url` varchar(500) DEFAULT NULL,
                     `voice_duration_sec` int DEFAULT NULL,
@@ -1963,11 +2150,34 @@ class DatabaseManager:
                     `word` varchar(64) NOT NULL COMMENT '敏感词',
                     `category` varchar(32) DEFAULT NULL COMMENT '分类 政治/色情/暴力/诈骗等',
                     `level` tinyint DEFAULT '1' COMMENT '严重等级 1-3',
+                    `action` varchar(24) NOT NULL DEFAULT 'replace' COMMENT 'reject/replace/manual_review',
                     `is_active` tinyint DEFAULT '1',
                     `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
                     UNIQUE KEY `uk_word` (`word`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='敏感词库'
+            """,
+            'community_moderation_task': """
+                CREATE TABLE IF NOT EXISTS `community_moderation_task` (
+                    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+                    `target_type` varchar(32) NOT NULL,
+                    `target_id` bigint unsigned NOT NULL,
+                    `user_id` bigint unsigned NOT NULL,
+                    `status` varchar(24) NOT NULL DEFAULT 'pending' COMMENT 'pending/approved/rejected/replaced/deleted/hidden',
+                    `risk_level` tinyint NOT NULL DEFAULT '1',
+                    `matched_words` json DEFAULT NULL,
+                    `raw_content` text,
+                    `display_content` text,
+                    `reason` varchar(255) DEFAULT NULL,
+                    `reviewed_by` bigint unsigned DEFAULT NULL,
+                    `reviewed_at` datetime DEFAULT NULL,
+                    `expires_at` datetime NOT NULL,
+                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_moderation_target` (`target_type`,`target_id`),
+                    KEY `idx_moderation_queue` (`status`,`risk_level`,`created_at`),
+                    KEY `idx_moderation_expire` (`expires_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='社区内容审核任务'
             """,
 
             # ============================================
@@ -2307,6 +2517,8 @@ class DatabaseManager:
         # 兼容已存在的旧库：CREATE TABLE IF NOT EXISTS 不会补齐新增字段。
         self._ensure_required_columns(cursor)
 
+        self._backfill_comment_roots(cursor)
+
         # 历史发帖作者回填到话题参与表（幂等，可重复执行）
         self._backfill_topic_participants(cursor)
 
@@ -2314,6 +2526,25 @@ class DatabaseManager:
         self._add_all_foreign_keys(cursor)
 
         logger.info(f"✅ 数据库表结构初始化完成（{len(tables)}张表）")
+
+    def _backfill_comment_roots(self, cursor) -> None:
+        """Resolve legacy nested replies to their top-level root, one depth at a time."""
+        while True:
+            cursor.execute(
+                """
+                UPDATE community_comment AS comment
+                INNER JOIN community_comment AS parent ON parent.id = comment.parent_id
+                SET comment.root_id = CASE
+                    WHEN parent.parent_id IS NULL THEN parent.id
+                    ELSE parent.root_id
+                END
+                WHERE comment.parent_id IS NOT NULL
+                  AND comment.root_id IS NULL
+                  AND (parent.parent_id IS NULL OR parent.root_id IS NOT NULL)
+                """
+            )
+            if cursor.rowcount is None or cursor.rowcount <= 0:
+                break
 
     def _backfill_topic_participants(self, cursor) -> None:
         """将 status=1 话题帖作者幂等写入 community_topic_participant。"""
@@ -2324,6 +2555,7 @@ class DatabaseManager:
             FROM community_post p
             INNER JOIN community_topic t ON t.id = p.topic_id AND t.is_active = 1
             WHERE p.topic_id IS NOT NULL AND p.status = 1
+              AND p.deleted_at IS NULL AND p.moderation_status = 1
             GROUP BY p.topic_id, p.user_id
             """
         )
