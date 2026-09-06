@@ -27,6 +27,7 @@ from app.schemas.auth import (
     CompletionItemResponse,
     CompletionResponse,
     IntroTemplateResponse,
+    NicknameUpdateResponse,
     PhotoOrderRequest,
     PreferenceUpdateRequest,
     ProfilePreviewResponse,
@@ -250,6 +251,20 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
             data["personality_tags"] = []
             data["tag_selections"] = {}
     return data
+
+
+async def update_nickname(db: AsyncSession, user_id: int, nickname: str) -> NicknameUpdateResponse:
+    await db.execute(
+        text("UPDATE users SET nickname = :nickname, updated_at = UTC_TIMESTAMP() WHERE id = :user_id"),
+        {"user_id": user_id, "nickname": nickname},
+    )
+    row = (await db.execute(
+        text("SELECT id AS user_id, nickname, updated_at FROM users WHERE id = :user_id"),
+        {"user_id": user_id},
+    )).mappings().one()
+    result = NicknameUpdateResponse(**row)
+    await db.commit()
+    return result
 
 
 async def update_profile(db: AsyncSession, user_id: int, request: ProfileUpdateRequest) -> dict[str, Any]:

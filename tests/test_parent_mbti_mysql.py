@@ -55,6 +55,13 @@ def test_parent_and_mbti_real_database_workflows(monkeypatch):
                 assert response.status_code == expected, (method, path, response.status_code, response.text)
                 return response.json()
 
+            nickname = await request(202, 'PATCH', '/users/me/nickname', json={'nickname': '  本人新昵称  '})
+            assert nickname['nickname'] == '本人新昵称' and nickname['user_id'] == 202
+            own_profile = await request(202, 'GET', '/users/me/profile')
+            assert own_profile['nickname'] == '本人新昵称'
+            await request(202, 'PATCH', '/users/me/nickname', 422, json={'nickname': '   '})
+            await request(202, 'PATCH', '/users/me/nickname', 422, json={'nickname': '甲' * 65})
+            await request(202, 'PATCH', '/users/me/nickname', 422, json={'nickname': '越权', 'user_id': 303})
             context = await request(101, 'GET', '/parent/context')
             assert context['child'] is None
             child_path = '/parent/children/202'
