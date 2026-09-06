@@ -386,3 +386,9 @@ Path 参数 `media_id` 为正整数且必须属于当前用户；成功返回新
 | `415` | 文件格式或真实内容无法识别 |
 | `422` | 字段、标签、MBTI、年龄、时长或排序校验失败 |
 | `503` | ffprobe 未安装或视频处理服务不可用 |
+
+## 2026-09-06 MBTI 写入入口
+
+**变更内容**：PATCH /users/me/profile中的mbti字段保留兼容，但只接受与当前数据库一致的原样回传。不同类型或清空已有类型返回422：`{"detail":"请通过情感实验室确认 MBTI 类型及来源后同步资料"}`。请求的其他字段不会在该拒绝中部分写入。
+
+旧客户端迁移：从普通资料PATCH移除mbti；选择与修改类型调用PUT /api/v1/emotion-lab/profile-source。请求示例`{"mbtiType":"ENFP","source":"self_reported","confirmed":true}`，返回mbtiType/source/assessmentVersion/resultId/confirmedAt；具体来源与错误约束见[情感实验室](emotion_lab.md)。本人完成测试也必须显式确认后才同步资料。
