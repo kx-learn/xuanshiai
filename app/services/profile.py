@@ -25,16 +25,16 @@ from app.core.config import settings
 from app.core.profile_tags import (
     ALL_TAG_OPTIONS,
     CUSTOM_TAG_CATEGORY_KEY,
+    CUSTOM_TAG_CATEGORY_MAP_KEY,
     TAG_CATEGORIES,
     TAG_CATALOG_REVISION,
-    custom_tags,
+    normalize_custom_tag_categories,
     personal_tags,
     split_personal_tags,
 )
 from app.services.content_filter import moderate_text
 from app.services.regions import region_display
 
-logger = logging.getLogger(__name__)
 from app.schemas.admin import MediaReviewRequest, MediaReviewResponse
 from app.schemas.auth import (
     CompletionItemResponse,
@@ -50,6 +50,8 @@ from app.schemas.auth import (
     TagOptionsResponse,
 )
 from app.services.revisions import RevisionKind, increment_revision_and_enqueue
+
+logger = logging.getLogger(__name__)
 
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 VIDEO_MAX_BYTES = 50 * 1024 * 1024
@@ -130,6 +132,17 @@ def _json_dict(value: Any) -> dict[str, list[str]]:
     }
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _profile_tag_values(row: Any) -> list[str]:
     values = _json_list(row.get("interest_tags")) + _json_list(row.get("personality_tags"))
     values += _json_list(row.get("tags"))
@@ -139,7 +152,16 @@ def _profile_tag_values(row: Any) -> list[str]:
 
 
 def _profile_custom_tags(row: Any) -> list[str]:
-    return custom_tags(_json_dict(row.get("tags")).get(CUSTOM_TAG_CATEGORY_KEY, []))
+    return list(_profile_custom_tag_categories(row))
+
+
+def _profile_custom_tag_categories(row: Any) -> dict[str, str]:
+    stored = _json_object(row.get("tags"))
+    values = stored.get(CUSTOM_TAG_CATEGORY_KEY, [])
+    return normalize_custom_tag_categories(
+        [str(item) for item in values] if isinstance(values, list) else [],
+        stored.get(CUSTOM_TAG_CATEGORY_MAP_KEY),
+    )
 
 
 def _json_value(value: Any) -> str:
@@ -319,9 +341,10 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
     data["interest_tags"] = _json_list(data["interest_tags"])
     data["personality_tags"] = _json_list(data["personality_tags"])
     raw_tags = _profile_tag_values(data)
-    data["custom_tags"] = _profile_custom_tags(data)
+    data["custom_tag_categories"] = _profile_custom_tag_categories(data)
+    data["custom_tags"] = list(data["custom_tag_categories"])
     data["personal_tags"] = personal_tags(raw_tags, data["custom_tags"])
-    data["legacy_tags"] = [] if public else [tag for tag in raw_tags if tag not in set(data["personal_tags"])]
+    data["legacy_tags"] = []
     data["interest_tags"], data["personality_tags"] = split_personal_tags(raw_tags, data["custom_tags"])
     data["tag_selections"] = {
         key: [tag for tag in data["personal_tags"] if tag in options]
@@ -376,6 +399,7 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
                 data[field] = None
             data["personal_tags"] = []
             data["custom_tags"] = []
+            data["custom_tag_categories"] = {}
             data["interest_tags"] = []
             data["personality_tags"] = []
             data["tag_selections"] = {}
@@ -386,6 +410,7 @@ async def update_profile(db: AsyncSession, user_id: int, request: ProfileUpdateR
     values = request.model_dump(exclude_unset=True)
     if "personal_tags" in values:
         selected = values.pop("personal_tags")
+        selected_custom_categories = values.pop("custom_tag_categories", {})
         selected_custom_tags = [tag for tag in selected if tag not in ALL_TAG_OPTIONS]
         for tag in selected_custom_tags:
             decision = await moderate_text(db, tag, field="自定义标签")
@@ -398,6 +423,7 @@ async def update_profile(db: AsyncSession, user_id: int, request: ProfileUpdateR
         }
         if selected_custom_tags:
             values["tag_selections"][CUSTOM_TAG_CATEGORY_KEY] = selected_custom_tags
+        values["tag_selections"][CUSTOM_TAG_CATEGORY_MAP_KEY] = selected_custom_categories
     if "birthday" in values and values["birthday"] and _calculate_age(values["birthday"]) < 18:
         raise HTTPException(422, detail="用户必须年满18周岁")
     if "gender" in values:
@@ -432,7 +458,9 @@ async def update_profile(db: AsyncSession, user_id: int, request: ProfileUpdateR
     await recalculate_completion(db, user_id)
     changed_fields = tuple(request.model_dump(exclude_unset=True).keys())
     if "personal_tags" in changed_fields:
-        changed_fields = tuple(key for key in changed_fields if key != "personal_tags") + ("interest_tags", "personality_tags", "tags")
+        changed_fields = tuple(
+            key for key in changed_fields if key not in {"personal_tags", "custom_tag_categories"}
+        ) + ("interest_tags", "personality_tags", "tags")
     if changed_fields:
         await increment_revision_and_enqueue(
             db,
