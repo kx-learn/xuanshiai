@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -367,6 +369,36 @@ async def test_provider_receives_only_server_built_public_context(
 
 
 @pytest.mark.asyncio
+async def test_provider_rate_limit_is_exposed_as_retryable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "30"})
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ai_avatar.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(ai_avatar.settings, "ai_avatar_provider", "openai_compatible")
+    monkeypatch.setattr(ai_avatar.settings, "ai_avatar_base_url", "https://provider.example/v1")
+    monkeypatch.setattr(ai_avatar.settings, "ai_avatar_model", "test-model")
+    monkeypatch.setattr(ai_avatar.settings, "ai_avatar_api_key", None)
+    context = ai_avatar.AiAvatarContext(
+        profile=AiAvatarProfileResponse(id=2, name="测试用户"),
+        public_posts=(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_avatar.call_ai_provider(context, [], "你好")
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers == {"Retry-After": "30"}
+
+
+@pytest.mark.asyncio
 async def test_disabled_provider_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ai_avatar.settings, "ai_avatar_provider", "disabled")
     context = ai_avatar.AiAvatarContext(
@@ -417,3 +449,133 @@ def test_ai_avatar_message_exposes_optional_bounded_idempotency_key() -> None:
     )
     assert schema["minLength"] == 1
     assert schema["maxLength"] == 128
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,retry,expected,header",
+    [
+        (429, "30", 429, "30"),
+        (429, None, 429, None),
+        (429, "tomorrow", 429, None),
+        (401, None, 503, None),
+        (403, None, 503, None),
+        (500, None, 503, None),
+        (502, None, 503, None),
+        (503, None, 503, None),
+        (200, None, 200, None),
+        (201, None, 200, None),
+    ],
+)
+async def test_ai_avatar_provider_http_status_matrix(monkeypatch, status, retry, expected, header):
+    real = httpx.AsyncClient
+
+    def handler(request):
+        return httpx.Response(
+            status,
+            headers={"Retry-After": retry} if retry else {},
+            json={"choices": [{"message": {"content": "synthetic answer"}}]},
+        )
+
+    monkeypatch.setattr(
+        ai_avatar.httpx,
+        "AsyncClient",
+        lambda **kwargs: real(transport=httpx.MockTransport(handler)),
+    )
+    for k, v in dict(
+        ai_avatar_provider="openai_compatible",
+        ai_avatar_base_url="https://provider.example/v1",
+        ai_avatar_model="test-model",
+        ai_avatar_api_key=None,
+    ).items():
+        monkeypatch.setattr(ai_avatar.settings, k, v)
+    ctx = ai_avatar.AiAvatarContext(
+        profile=AiAvatarProfileResponse(id=2, name="synthetic"), public_posts=()
+    )
+    if expected == 200:
+        assert await ai_avatar.call_ai_provider(ctx, [], "test") == "synthetic answer"
+    else:
+        with pytest.raises(HTTPException) as err:
+            await ai_avatar.call_ai_provider(ctx, [], "test")
+        assert err.value.status_code == expected
+        assert err.value.headers == ({"Retry-After": header} if header else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [True, False])
+async def test_ai_avatar_conversation_insert_binds_all_schema_parameters(monkeypatch, legacy):
+    ctx = ai_avatar.AiAvatarContext(
+        profile=AiAvatarProfileResponse(id=26, name="synthetic"), public_posts=()
+    )
+    stubs = {
+        "assert_text_allowed": None,
+        "get_public_ai_context": ctx,
+        "_conversation_id": None,
+        "_history_rows": [],
+        "_owner_answer_rows": [],
+        "consume_daily": True,
+        "call_ai_provider": "synthetic answer",
+        "decide_text": SimpleNamespace(action="allow"),
+        "_conversation_column_types": (
+            {"owner_user_id": "bigint", "visitor_user_id": "bigint", "status": "tinyint"}
+            if legacy
+            else {"status": "varchar(16)"}
+        ),
+        "_create_pending_owner_question": None,
+    }
+    for name, value in stubs.items():
+        monkeypatch.setattr(ai_avatar, name, AsyncMock(return_value=value))
+    statements = []
+
+    async def execute(statement, params=None):
+        sql = str(statement)
+        statements.append((sql, params))
+        if "INSERT INTO ai_avatar_conversation" in sql:
+            required = set(statement.compile().params)
+            assert required.issubset(params), "unbound SQL parameters"
+            assert params["viewer_id"] == 14 and params["target_id"] == 26
+            if legacy:
+                assert params["visitor_id"] == 14 and params["owner_id"] == 26
+            else:
+                assert "visitor_id" not in params
+        return SimpleNamespace(scalar_one=lambda: 123)
+
+    db = SimpleNamespace(execute=execute, commit=AsyncMock(), rollback=AsyncMock())
+    await ai_avatar.send_ai_message(db, 14, 2, 26, "synthetic question")
+    assert any("INSERT INTO ai_avatar_conversation" in sql for sql, _ in statements)
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_avatar_provider_limit_refunds_and_aborts_reservation(monkeypatch):
+    reservation = SimpleNamespace(response=None)
+    ctx = ai_avatar.AiAvatarContext(
+        profile=AiAvatarProfileResponse(id=26, name="synthetic"), public_posts=()
+    )
+    stubs = {
+        "assert_text_allowed": None,
+        "get_public_ai_context": ctx,
+        "reserve_or_replay": reservation,
+        "_conversation_id": None,
+        "_history_rows": [],
+        "consume_daily": True,
+        "_refund_quota_safely": None,
+        "abort_idempotency": None,
+    }
+    for name, value in stubs.items():
+        monkeypatch.setattr(ai_avatar, name, AsyncMock(return_value=value))
+    monkeypatch.setattr(
+        ai_avatar,
+        "call_ai_provider",
+        AsyncMock(side_effect=HTTPException(429, "limited", headers={"Retry-After": "30"})),
+    )
+    db = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock(), rollback=AsyncMock())
+    with pytest.raises(HTTPException) as err:
+        await ai_avatar.send_ai_message(db, 14, 2, 26, "test", idempotency_key="synthetic-key")
+    assert err.value.status_code == 429 and err.value.headers == {"Retry-After": "30"}
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
+    db.execute.assert_not_awaited()
+    ai_avatar._refund_quota_safely.assert_awaited_once()
+    ai_avatar.abort_idempotency.assert_awaited_once_with(db, reservation)

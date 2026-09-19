@@ -446,6 +446,14 @@ async def call_ai_provider(
     except httpx.TimeoutException as exc:
         logger.warning("AI provider timed out")
         raise HTTPException(504, detail="AI 回答超时，请稍后重试") from exc
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            logger.warning("AI provider rate limited")
+            retry_after = exc.response.headers.get("Retry-After")
+            headers = {"Retry-After": retry_after} if retry_after and retry_after.isdigit() else None
+            raise HTTPException(429, detail="AI 服务当前请求较多，请稍后重试", headers=headers) from exc
+        logger.warning("AI provider request failed: status=%s", exc.response.status_code)
+        raise HTTPException(503, detail="AI 服务暂时不可用，请稍后重试") from exc
     except (httpx.HTTPError, ValueError, AiProviderError) as exc:
         logger.warning("AI provider request failed: error_type=%s", type(exc).__name__)
         raise HTTPException(503, detail="AI 服务暂时不可用，请稍后重试") from exc
@@ -838,6 +846,7 @@ async def send_ai_message(
             insert_columns = ["owner_user_id", "visitor_user_id", *insert_columns]
             insert_values = [":owner_id", ":visitor_id", *insert_values]
             parameters["owner_id"] = target_id
+            parameters["visitor_id"] = viewer_id
         await db.execute(
             text(
                 f"""INSERT INTO ai_avatar_conversation
