@@ -31,6 +31,11 @@ from app.services.ai.prompts.moxiang_master import (
     build_realtime_update_instructions,
 )
 from app.services.voice.realtime.provider import RealtimeProviderConfig
+from app.services.voice.realtime.context import (
+    build_journey_context,
+    load_master_history,
+    send_json,
+)
 from app.services.voice.realtime.session import (
     RealtimeSessionCallbacks,
     RealtimeVoiceSession,
@@ -183,21 +188,21 @@ class MoxiangRealtimeBridge:
         )
 
     async def _build_context(self) -> str:
-        from app.api.routes.voice_moxiang import _journey_build_context
-
-        ctx = await _journey_build_context(
-            self.context.session_id, self.context.subject
+        return (
+            await build_journey_context(
+                self.context.session_id,
+                self.context.subject,
+                session_factory=_db_session_factory,
+            )
+            or ""
         )
-        return ctx or ""
 
     async def _load_history(self) -> list[dict[str, str]]:
-        from app.api.routes.voice_moxiang import _load_master_history
-
         if _db_session_factory is None or not self.context.session_id:
             return []
         try:
             async with _db_session_factory() as db:
-                return await _load_master_history(db, self.context.session_id)
+                return await load_master_history(db, self.context.session_id)
         except Exception:  # noqa: BLE001
             logger.debug("realtime_history_load_failed", exc_info=True)
             return []
@@ -326,9 +331,7 @@ async def realtime_watchdog(
     except asyncio.CancelledError:
         return
     try:
-        from app.api.routes.voice_moxiang import _send_json
-
-        await _send_json(
+        await send_json(
             ws,
             {
                 "type": "error",

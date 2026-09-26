@@ -1291,7 +1291,7 @@ Idempotency-Key: profile-field-delete-20260807-01
 
 ## 15. 兼容性与后续任务
 
-- 本文件共 13 个路径为 2026-08-08 新增/定稿（6 个会话路径 + 6 个草稿/发布/历史/删除路径 + 1 个删除字段路径），不修改任何旧接口；均已注册到 OpenAPI `paths`。
+- 本文件覆盖 AI 画像会话、草稿、发布、历史和删除传播契约；当前运行时全部 AI/语音 HTTP 路径以 `docs/api/AI能力.md` 的 OpenAPI 对账索引为准，避免把本文件的历史章节数量当作完整路由数量。
 - 响应字段均为必返/可选语义冻结；后续任务（搜索、匹配度）新增接口时保持本文件字段不破坏性变更。
 - 后台 `profile_extract` 任务经 `GET /api/v1/ai/tasks/{task_id}` 轮询（见 `docs/api/AI通用任务.md`），`result_ref` 形如 `profile-draft:{draft_id}`；publish 创建的 `profile_projection` 任务与 delete 创建的 `cleanup` 任务同样经任务接口轮询。
 - 删除的**异步物理清理**（清理 `ai_feature_projection`/`ai_search_result`/`ai_compatibility_snapshot`、可删除原文与缓存）由 Task 9/10/11 的后台消费者实现；本任务已保证同步不可读、写 outbox 事件并注册清理消费者占位 handler。审计只保留最小不可逆引用与清理状态；导出能力在合规批准后单独启用，不作为首期默认路径。

@@ -493,6 +493,14 @@ class Settings(BaseSettings):
         )
         if not any_ai_enabled:
             return
+        if self.secret_key.strip() in {"", "change-me-in-local-env"} or len(self.secret_key.strip()) < 32:
+            raise ValueError("生产环境启用 AI 必须配置至少 32 位非占位 SECRET_KEY")
+        if self.debug or self.docs_enabled:
+            raise ValueError("生产环境启用 AI 必须关闭 DEBUG、DOCS_ENABLED")
+        if self.ai_provider == "deepseek" and not self.ai_deepseek_api_key:
+            raise ValueError("生产环境启用 DeepSeek AI 必须配置 AI_DEEPSEEK_API_KEY")
+        if self.ai_provider == "dots" and not self.ai_dots_api_key:
+            raise ValueError("生产环境启用 Dots AI 必须配置 AI_DOTS_API_KEY")
         if not self.ai_approvals_complete():
             raise ValueError(
                 "生产环境启用 AI 功能必须同时满足 ai_policy_approved、"

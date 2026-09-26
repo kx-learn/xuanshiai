@@ -10,6 +10,7 @@ approval gate (``ai_policy_approved`` / ``ai_provider_approved`` / retention).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -19,7 +20,7 @@ from typing import Any
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
-from app.schemas.ai_profile import ProfileSubject, normalize_entry_category
+from app.schemas.ai_profile import PROFILE_ENTRY_CATEGORIES, ProfileSubject, normalize_entry_category
 from app.services.ai.audit import emit_ai_metric
 from app.services.ai.base import (
     AIProvider,
@@ -653,14 +654,19 @@ def _drop_invalid_extract_item(scene: str, item: dict[str, Any]) -> None:
     """批次3 #9/#25：provider 边界丢弃非法条目时留痕，不再静默 continue。
 
     category 先经 :func:`normalize_entry_category` 归一；仍不合法的条目
-    被 Pydantic 拒绝后记 warning（含 prompt 场景与原始 category）并计入
+    被 Pydantic 拒绝后记 warning（仅记录受控元数据）并计入
     ``schema_invalid`` 指标，便于离线回归发现模型输出格式的漂移。
     """
+    content = str(item.get("content", ""))
+    content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    normalized_category = normalize_entry_category(item.get("category"))
+    category = normalized_category if normalized_category in PROFILE_ENTRY_CATEGORIES else "invalid"
     logger.warning(
-        "ai_extract_item_dropped scene=%s category=%r content_head=%r",
+        "ai_extract_item_dropped scene=%s category=%r content_len=%s content_sha256=%s",
         scene,
-        item.get("category"),
-        str(item.get("content", ""))[:40],
+        category,
+        len(content),
+        content_digest,
     )
     emit_ai_metric("schema_invalid", 1, {"scene": scene})
 
