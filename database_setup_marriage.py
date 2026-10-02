@@ -894,6 +894,10 @@ class DatabaseManager:
             ("user_behavior_event", "user_id"),
             ("user_behavior_event", "target_user_id"),
             ("user_mbti_result", "user_id"),
+            ("user_mbti_assessment_session", "user_id"),
+            ("user_mbti_profile_source", "user_id"),
+            ("message_contact_exchange", "requester_id"),
+            ("message_contact_exchange", "recipient_id"),
             ("user_love_style_result", "user_id"),
             ("user_match_score_history", "user_id"),
             ("user_match_score_history", "target_user_id"),
@@ -2963,6 +2967,46 @@ class DatabaseManager:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MBTI测试结果'
             """,
             # ============================================
+            # 46.1 MBTI 测评会话快照
+            # ============================================
+            'user_mbti_assessment_session': """
+                CREATE TABLE IF NOT EXISTS `user_mbti_assessment_session` (
+                    `id` varchar(128) NOT NULL,
+                    `user_id` bigint unsigned NOT NULL,
+                    `definition_id` varchar(64) NOT NULL,
+                    `definition_version` varchar(64) NOT NULL,
+                    `result_copy_version` varchar(64) NOT NULL,
+                    `status` varchar(16) NOT NULL COMMENT 'in_progress|completed|discarded',
+                    `question_snapshot` json NOT NULL COMMENT '题文、选项、维度与极性固定快照',
+                    `answers` json DEFAULT NULL COMMENT '按题目 ID 保存的答案',
+                    `result_json` json DEFAULT NULL COMMENT '完成后不可变的结果快照',
+                    `completed_at` datetime(6) DEFAULT NULL,
+                    `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                    `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+                    PRIMARY KEY (`id`),
+                    KEY `idx_mbti_session_user_status` (`user_id`,`status`,`created_at`),
+                    KEY `idx_mbti_session_definition` (`definition_id`,`definition_version`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MBTI测评会话与固定题目快照'
+            """,
+
+            # ============================================
+            # 46.2 当前 MBTI 资料来源
+            # ============================================
+            'user_mbti_profile_source': """
+                CREATE TABLE IF NOT EXISTS `user_mbti_profile_source` (
+                    `user_id` bigint unsigned NOT NULL,
+                    `mbti_type` varchar(8) NOT NULL,
+                    `source` varchar(16) NOT NULL COMMENT 'assessment|self_reported',
+                    `assessment_version` varchar(64) DEFAULT NULL,
+                    `result_id` varchar(128) DEFAULT NULL,
+                    `confirmed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`user_id`),
+                    KEY `idx_mbti_profile_source_type` (`mbti_type`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资料页当前MBTI来源'
+            """,
+
+            # ============================================
             # 47. 恋爱风格测试结果
             # ============================================
             "user_love_style_result": """
@@ -3165,6 +3209,22 @@ class DatabaseManager:
 
         # 本次一期商业化领域表与基础用户表保持同一初始化入口。
         tables.update(BUSINESS_TABLES)
+        tables['message_contact_exchange'] = """
+            CREATE TABLE IF NOT EXISTS message_contact_exchange (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                session_id BIGINT UNSIGNED NOT NULL,
+                requester_id BIGINT UNSIGNED NOT NULL,
+                recipient_id BIGINT UNSIGNED NOT NULL,
+                contact_type VARCHAR(16) NOT NULL,
+                contact_value_encrypted TEXT NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                responded_at DATETIME DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_contact_exchange_recipient (recipient_id,status,created_at),
+                KEY idx_contact_exchange_session (session_id,created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
 
         # AI 派生投影（revision/outbox/消费收据）与业务表同一入口。
         from app.db.derivation_schema import (
@@ -3198,6 +3258,13 @@ class DatabaseManager:
         for table_name, sql in tables.items():
             cursor.execute(sql)
             logger.debug(f"表 `{table_name}` 已创建/确认")
+
+        # The v2 aggregate has its own schema; never reuse upstream live_session.
+        from pathlib import Path
+        live_migration = Path(__file__).parent / 'migrations' / '20261002_live_v2_trial.sql'
+        for statement in live_migration.read_text(encoding='utf-8').split(';'):
+            if statement.strip():
+                cursor.execute(statement)
 
         # Keep one explicit bootstrap super-admin for upgraded installations.
         cursor.execute("""

@@ -5,7 +5,7 @@ import logging
 import mimetypes
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
@@ -69,9 +69,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         settings.app_version,
     )
     await initialize_database_on_startup()
-    yield
-    if engine is not None:
-        await engine.dispose()
+    from app.services.live_media import cleanup_worker
+    worker = asyncio.create_task(cleanup_worker())
+    try:
+        yield
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        if engine is not None:
+            await engine.dispose()
     logger.info("application_stopping")
 
 

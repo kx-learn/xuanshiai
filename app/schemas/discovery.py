@@ -188,6 +188,7 @@ class FavoriteReceivedPage(BaseModel):
 
 class ApplicationCreateRequest(BaseModel):
     message: str | None = Field(default=None, max_length=255)
+    live_opportunity_id: int | None = Field(default=None, gt=0, description='四轮直播 v2 完成交流后的共享免费申请机会')
 
 
 class ApplicationResponse(BaseModel):
@@ -200,6 +201,7 @@ class ApplicationResponse(BaseModel):
     created_at: datetime
     from_user: RelationUserSummary | None = None
     to_user: RelationUserSummary | None = None
+    live_opportunity_id: int | None = None
 
 
 class ApplicationPage(BaseModel):
