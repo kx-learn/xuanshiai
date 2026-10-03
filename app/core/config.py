@@ -67,6 +67,22 @@ class Settings(BaseSettings):
     paper_plane_daily_limit: int = 3
 
     live_enabled: bool = False
+    # Invited four-round v2 business; independent from the upstream live provider.
+    live_media_mode: Literal['disabled', 'trtc'] = 'trtc'
+    live_trial_enabled: bool = False
+    live_wechat_av_verified: bool = False
+    live_device_pilot_verified: bool = False
+    live_private_map_key_enabled: bool = False
+    live_sdk_app_id: int = 0
+    live_sdk_secret: str = ''
+    live_cloud_secret_id: str = ''
+    live_cloud_secret_key: str = ''
+    live_cloud_region: str = 'ap-guangzhou'
+    live_cdn_push_domain: str = ''
+    live_cdn_play_domain: str = ''
+    live_cdn_push_key: str = ''
+    live_cdn_play_key: str = ''
+    live_retention_notice: str = ''
     live_provider: Literal["mock", "tencent"] = "mock"
     tencent_live_sdk_app_id: int | None = Field(default=None, ge=1)
     tencent_live_sdk_secret_key: SecretStr | None = None
@@ -405,6 +421,8 @@ class Settings(BaseSettings):
         """Prevent Mock providers from being enabled in production."""
         if self.environment in {"staging", "production"} and self.auto_init_db:
             raise ValueError("staging/production 环境必须关闭 AUTO_INIT_DB")
+        if not self.is_test_mode and self.live_media_mode == 'disabled':
+            raise ValueError('LIVE_MEDIA_MODE=disabled 仅允许 development/testing 环境')
         if self.environment in {"staging", "production"} and self.live_provider == "mock":
             raise ValueError("staging/production 环境禁止使用直播 Mock Provider")
         if self.live_enabled and self.live_provider == "tencent":

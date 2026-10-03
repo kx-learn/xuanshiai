@@ -32,6 +32,7 @@ from app.api.routes import (
     customer_leads_admin,
     promotion_order_admin,
     discovery,
+    emotion_lab,
     finance,
     health,
     identity,
@@ -41,6 +42,7 @@ from app.api.routes import (
     live_callbacks,
     live_host,
     live_ws,
+    live_v2,
     matchmaker_workspace,
     matchmaker,
     matchmaker_admin,
@@ -57,6 +59,8 @@ from app.api.routes import (
     member_follow_up_admin,
     member_records_admin,
     member_vip_admin,
+    message,
+    parent,
     offline_vip_admin,
     membership,
     organization,
@@ -90,6 +94,7 @@ api_router.include_router(live_callbacks.router, tags=["live-callback"])
 api_router.include_router(location.router, tags=["位置服务"])
 api_router.include_router(location.users_router, tags=["位置服务"])
 api_router.include_router(live.router, tags=["直播相亲"])
+api_router.include_router(live_v2.router, tags=["直播相亲试点 v2"])
 api_router.include_router(live_host.router, tags=["直播相亲"])
 api_router.include_router(live_admin.router, tags=["直播相亲管理"])
 api_router.include_router(live_ws.router, tags=["直播相亲"])
@@ -113,12 +118,15 @@ api_router.include_router(identity.router, tags=["账号与认证"])
 api_router.include_router(profile.router, tags=["首页与资料"])
 api_router.include_router(discovery.router, tags=["首页与资料"])
 api_router.include_router(discovery.users_router, tags=["首页与资料"])
+api_router.include_router(emotion_lab.router, tags=["首页与资料"])
 api_router.include_router(matchmaker.router, tags=["红娘"])
 api_router.include_router(matchmaker_workspace.router, tags=["红娘"])
 api_router.include_router(matchmaker.product_router, tags=["红娘"])
 api_router.include_router(matchmaker.requests_router, tags=["红娘"])
 api_router.include_router(meeting.router, tags=["红娘"])
 api_router.include_router(social.router, tags=["消息"])
+api_router.include_router(message.router, tags=["消息"])
+api_router.include_router(parent.router, tags=["父母授权"])
 api_router.include_router(community.router, tags=["社区"])
 api_router.include_router(media.router, tags=["社区"])
 api_router.include_router(community_admin.router, tags=["\u7ba1\u7406\u540e\u53f0"])

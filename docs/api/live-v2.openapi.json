@@ -1,0 +1,2358 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "宣誓爱直播 v2 试点接口",
+    "version": "2026-10-02"
+  },
+  "paths": {
+    "/api/v1/live/v2/accounts": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "运营搜索已有账号以维护名单",
+        "operationId": "accounts_api_v1_live_v2_accounts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "昵称子串或精确账号ID",
+              "title": "Q"
+            },
+            "description": "昵称子串或精确账号ID"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveAccountList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/resources": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Resource Status",
+        "operationId": "resource_status_api_v1_live_v2_resources_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveResources"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/live/v2/sessions": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Sessions",
+        "operationId": "sessions_api_v1_live_v2_sessions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Create",
+        "operationId": "create_api_v1_live_v2_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSnapshot"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Detail",
+        "operationId": "detail_api_v1_live_v2_sessions__sid__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSnapshot"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "本场运营完整更新场前信息与名单",
+        "operationId": "update_api_v1_live_v2_sessions__sid__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSnapshot"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/commands": {
+      "post": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Command",
+        "operationId": "command_api_v1_live_v2_sessions__sid__commands_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSnapshot"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/actions": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "本场工作人员分页查看脱敏操作记录",
+        "operationId": "actions_api_v1_live_v2_sessions__sid__actions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveActionList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/credentials": {
+      "post": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Credentials",
+        "operationId": "credentials_api_v1_live_v2_sessions__sid__credentials_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveCredentials"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/results": {
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Results",
+        "operationId": "results_api_v1_live_v2_sessions__sid__results_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveResults"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/reports": {
+      "post": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Report",
+        "operationId": "report_api_v1_live_v2_sessions__sid__reports_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__schemas__live_v2__LiveReportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Reports",
+        "operationId": "reports_api_v1_live_v2_sessions__sid__reports_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LiveReport"
+                  },
+                  "title": "Response Reports Api V1 Live V2 Sessions  Sid  Reports Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/v2/sessions/{sid}/reports/{report_id}/resolve": {
+      "post": {
+        "tags": [
+          "直播相亲试点 v2",
+          "直播相亲"
+        ],
+        "summary": "Resolve",
+        "operationId": "resolve_api_v1_live_v2_sessions__sid__reports__report_id__resolve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Sid"
+            }
+          },
+          {
+            "name": "report_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "title": "Report Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveReportResolution"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/discovery/applications/{target_id}": {
+      "post": {
+        "tags": [
+          "首页与资料"
+        ],
+        "summary": "申请认识",
+        "operationId": "apply_to_user_api_v1_discovery_applications__target_id__post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "target_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Target Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplicationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LiveAccountList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LiveAccount"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "has_more"
+        ],
+        "title": "LiveAccountList"
+      },
+      "LiveAccount": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "nickname": {
+            "type": "string",
+            "title": "Nickname"
+          },
+          "gender": {
+            "type": "integer",
+            "title": "Gender"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "账号状态、成年、手机、实名等资格缺项，不返回敏感值"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "nickname",
+          "gender",
+          "eligible",
+          "missing"
+        ],
+        "title": "LiveAccount"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "LiveResources": {
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing"
+          },
+          "provider": {
+            "type": "string",
+            "const": "tencent-trtc",
+            "title": "Provider",
+            "default": "tencent-trtc"
+          },
+          "media_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "trtc"
+            ],
+            "title": "Media Mode",
+            "default": "trtc"
+          },
+          "business_ready": {
+            "type": "boolean",
+            "title": "Business Ready",
+            "description": "业务环境配置允许运行；不是数据库/Redis健康探测",
+            "default": true
+          },
+          "business_missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Business Missing"
+          },
+          "media_ready": {
+            "type": "boolean",
+            "title": "Media Ready",
+            "default": false
+          },
+          "media_missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Media Missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ready",
+          "missing"
+        ],
+        "title": "LiveResources"
+      },
+      "LiveList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "can_manage": {
+            "type": "boolean",
+            "title": "Can Manage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "can_manage"
+        ],
+        "title": "LiveList"
+      },
+      "SessionSummary": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "scheduled_at": {
+            "type": "integer",
+            "title": "Scheduled At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "host",
+              "matchmaker",
+              "guest",
+              "spectator",
+              "operator"
+            ],
+            "title": "Role"
+          },
+          "media_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "trtc"
+            ],
+            "title": "Media Mode",
+            "default": "trtc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "scheduled_at",
+          "status",
+          "role"
+        ],
+        "title": "SessionSummary"
+      },
+      "LiveCreateRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Title",
+            "description": "受邀场次标题"
+          },
+          "scheduled_at": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Scheduled At",
+            "description": "计划开场 Unix 秒，UTC"
+          },
+          "host_id": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Host Id",
+            "description": "唯一主持的现有账号 ID"
+          },
+          "matchmaker_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Matchmaker Ids",
+            "description": "两位红娘的现有账号 ID"
+          },
+          "male_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Male Ids",
+            "description": "四位男嘉宾 ID，数组顺序即席位顺序"
+          },
+          "female_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Female Ids",
+            "description": "四位女嘉宾 ID，数组顺序即席位顺序"
+          },
+          "main_order": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Main Order",
+            "description": "2 男 2 女主嘉宾顺序"
+          },
+          "spectator_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Spectator Ids",
+            "description": "受邀观众 ID，不获得上台或选择权"
+          },
+          "notice": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 10,
+            "title": "Notice",
+            "description": "展示范围、音视频及必要审核留存告知"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "scheduled_at",
+          "host_id",
+          "matchmaker_ids",
+          "male_ids",
+          "female_ids",
+          "main_order",
+          "notice"
+        ],
+        "title": "LiveCreateRequest"
+      },
+      "LiveSnapshot": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "场次 ID"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "场次标题"
+          },
+          "scheduled_at": {
+            "type": "integer",
+            "title": "Scheduled At",
+            "description": "计划开场 Unix 秒，按本地时区展示"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "draft/scheduled/live/paused/ended/cancelled"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": "单调递增业务版本，命令提交时必须携带"
+          },
+          "server_time": {
+            "type": "integer",
+            "title": "Server Time",
+            "description": "服务端当前 Unix 秒，用于校正倒计时"
+          },
+          "notice": {
+            "type": "string",
+            "title": "Notice",
+            "description": "本场固定的展示、音视频和留存告知"
+          },
+          "round_index": {
+            "type": "integer",
+            "title": "Round Index",
+            "description": "当前轮次索引 0—3，显示时加一"
+          },
+          "main_id": {
+            "type": "integer",
+            "title": "Main Id",
+            "description": "当前主嘉宾账号 ID"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "intro",
+              "question",
+              "interest",
+              "choice",
+              "exchanges",
+              "transition",
+              "completed"
+            ],
+            "title": "Phase",
+            "description": "当前轮次环节"
+          },
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline",
+            "description": "环节截止 Unix 秒；未开始、暂停或整场结束为 null"
+          },
+          "pause_remaining": {
+            "type": "integer",
+            "title": "Pause Remaining",
+            "description": "暂停时剩余秒数，恢复时重新计算 deadline"
+          },
+          "speaker_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker Id",
+            "description": "主持安排的发言人 ID，无安排为 null"
+          },
+          "media_epoch": {
+            "type": "integer",
+            "title": "Media Epoch",
+            "description": "媒体房间代数；变化后重新获取凭证和连接"
+          },
+          "media_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "trtc"
+            ],
+            "title": "Media Mode",
+            "default": "trtc"
+          },
+          "controller_id": {
+            "type": "integer",
+            "title": "Controller Id",
+            "description": "唯一有效控场者；不改变公开主持角色"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id",
+            "description": "本场运营账号；平台管理员不自动获得本场权限"
+          },
+          "main_order": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Main Order",
+            "description": "已确定的四轮主嘉宾顺序"
+          },
+          "can_edit": {
+            "type": "boolean",
+            "title": "Can Edit",
+            "description": "仅本场运营、未开场时为 true"
+          },
+          "can_read_actions": {
+            "type": "boolean",
+            "title": "Can Read Actions",
+            "description": "本场运营、主持、红娘可读脱敏操作记录"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/PublicMember"
+            },
+            "type": "array",
+            "title": "Members",
+            "description": "本场名单与授权公开资料，含已离场人员"
+          },
+          "me": {
+            "$ref": "#/components/schemas/LiveMe",
+            "description": "仅调用者自己的意愿与资格，不含他人单方选择"
+          },
+          "allowed_actions": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "reserve",
+                "check_in",
+                "leave",
+                "hand",
+                "light",
+                "special",
+                "choose",
+                "withdraw_exchange",
+                "schedule",
+                "start",
+                "pause",
+                "resume",
+                "extend",
+                "advance",
+                "speaker",
+                "stage",
+                "remove",
+                "end",
+                "cancel",
+                "rehearse",
+                "decline",
+                "take_control",
+                "return_control",
+                "skip_round"
+              ]
+            },
+            "type": "array",
+            "title": "Allowed Actions",
+            "description": "按身份、状态和时间计算的动作；对象见 allowed_targets，提交仍须携带版本"
+          },
+          "allowed_targets": {
+            "$ref": "#/components/schemas/LiveTargets"
+          },
+          "exchanges": {
+            "items": {
+              "$ref": "#/components/schemas/Exchange"
+            },
+            "type": "array",
+            "title": "Exchanges",
+            "description": "仅本轮截止后互选成功的组合，按候选席位顺序"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "scheduled_at",
+          "status",
+          "revision",
+          "server_time",
+          "notice",
+          "round_index",
+          "main_id",
+          "phase",
+          "deadline",
+          "pause_remaining",
+          "speaker_id",
+          "media_epoch",
+          "controller_id",
+          "owner_id",
+          "main_order",
+          "can_edit",
+          "can_read_actions",
+          "members",
+          "me",
+          "allowed_actions",
+          "exchanges"
+        ],
+        "title": "LiveSnapshot"
+      },
+      "PublicMember": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "现有账号 ID，不是 TRTC 用户串"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "host",
+              "matchmaker",
+              "guest",
+              "spectator",
+              "operator"
+            ],
+            "title": "Role",
+            "description": "本场角色，不赋予其他场次的权限"
+          },
+          "group": {
+            "type": "string",
+            "title": "Group",
+            "description": "male/female/none；工作人员和观众为 none"
+          },
+          "seat": {
+            "type": "integer",
+            "title": "Seat",
+            "description": "本组席位 1—4，工作人员及观众为 0"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "本人已授权称呼，未确认时为受邀用户"
+          },
+          "introduction": {
+            "type": "string",
+            "title": "Introduction",
+            "description": "本人已授权公开的介绍，未确认时为空"
+          },
+          "attendance": {
+            "type": "string",
+            "title": "Attendance",
+            "description": "invited/reserved/checked_in/backstage/onstage/left；签到完成直接进入 backstage"
+          },
+          "on_stage": {
+            "type": "boolean",
+            "title": "On Stage",
+            "description": "是否拥有当前逻辑舞台席位；disabled不代表媒体发布或设备检测通过"
+          },
+          "hand": {
+            "type": "boolean",
+            "title": "Hand",
+            "description": "是否正在举手等待主持安排"
+          },
+          "light_target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Light Target",
+            "description": "本轮公开普通亮灯对象，无亮灯为 null"
+          },
+          "special_target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Special Target",
+            "description": "本场公开特别心动对象，撤回或未使用为 null"
+          },
+          "invitation": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "accepted",
+              "declined"
+            ],
+            "title": "Invitation",
+            "default": "pending"
+          },
+          "checked_in": {
+            "type": "boolean",
+            "title": "Checked In",
+            "default": false
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "role",
+          "group",
+          "seat",
+          "display_name",
+          "introduction",
+          "attendance",
+          "on_stage",
+          "hand",
+          "light_target",
+          "special_target"
+        ],
+        "title": "PublicMember"
+      },
+      "LiveMe": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "description": "当前登录用户 ID"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "host",
+              "matchmaker",
+              "guest",
+              "spectator",
+              "operator"
+            ],
+            "title": "Role",
+            "description": "本场身份"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "description": "是否已确认本场告知及公开资料"
+          },
+          "invitation": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "accepted",
+              "declined"
+            ],
+            "title": "Invitation",
+            "default": "pending"
+          },
+          "reserved": {
+            "type": "boolean",
+            "title": "Reserved",
+            "description": "是否预约观看，独立于嘉宾资格"
+          },
+          "checked_in": {
+            "type": "boolean",
+            "title": "Checked In",
+            "description": "是否已签到，离场后不自动撤销原签到记录"
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "description": "是否被工作人员移出；后续场次接口拒绝访问"
+          },
+          "special_remaining": {
+            "type": "integer",
+            "title": "Special Remaining",
+            "description": "特别心动剩余 0 或 1 次，撤回不恢复"
+          },
+          "selection": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Selection",
+            "description": "只返回调用者本人的选择"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "role",
+          "accepted",
+          "reserved",
+          "checked_in",
+          "removed",
+          "special_remaining"
+        ],
+        "title": "LiveMe"
+      },
+      "LiveTargets": {
+        "properties": {
+          "stage_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Stage Ids",
+            "description": "可安排上下台的人"
+          },
+          "speaker_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Speaker Ids",
+            "description": "本环节可安排发言的人"
+          },
+          "remove_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Remove Ids",
+            "description": "可移出的人；永不包含运营自己"
+          },
+          "interest_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Interest Ids",
+            "description": "本人可亮灯/特别心动的对象"
+          },
+          "choice_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Choice Ids",
+            "description": "本人可私密选择的有效对象"
+          }
+        },
+        "type": "object",
+        "title": "LiveTargets"
+      },
+      "Exchange": {
+        "properties": {
+          "main_id": {
+            "type": "integer",
+            "title": "Main Id"
+          },
+          "candidate_id": {
+            "type": "integer",
+            "title": "Candidate Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "active",
+              "completed",
+              "withdrawn"
+            ],
+            "title": "Status",
+            "default": "queued"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "main_id",
+          "candidate_id"
+        ],
+        "title": "Exchange"
+      },
+      "LiveUpdateRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Title",
+            "description": "受邀场次标题"
+          },
+          "scheduled_at": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Scheduled At",
+            "description": "计划开场 Unix 秒，UTC"
+          },
+          "host_id": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Host Id",
+            "description": "唯一主持的现有账号 ID"
+          },
+          "matchmaker_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Matchmaker Ids",
+            "description": "两位红娘的现有账号 ID"
+          },
+          "male_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Male Ids",
+            "description": "四位男嘉宾 ID，数组顺序即席位顺序"
+          },
+          "female_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Female Ids",
+            "description": "四位女嘉宾 ID，数组顺序即席位顺序"
+          },
+          "main_order": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Main Order",
+            "description": "2 男 2 女主嘉宾顺序"
+          },
+          "spectator_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Spectator Ids",
+            "description": "受邀观众 ID，不获得上台或选择权"
+          },
+          "notice": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 10,
+            "title": "Notice",
+            "description": "展示范围、音视频及必要审核留存告知"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "description": "编辑前快照版本；完整替换场前信息和名单"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "scheduled_at",
+          "host_id",
+          "matchmaker_ids",
+          "male_ids",
+          "female_ids",
+          "main_order",
+          "notice",
+          "expected_revision"
+        ],
+        "title": "LiveUpdateRequest"
+      },
+      "LiveCommand": {
+        "properties": {
+          "command_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "title": "Command Id",
+            "description": "单次操作幂等键，重试复用"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "description": "操作前快照版本；冲突重新拉取，不自动重放"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reserve",
+              "check_in",
+              "leave",
+              "hand",
+              "light",
+              "special",
+              "choose",
+              "withdraw_exchange",
+              "schedule",
+              "start",
+              "pause",
+              "resume",
+              "extend",
+              "advance",
+              "speaker",
+              "stage",
+              "remove",
+              "end",
+              "cancel",
+              "rehearse",
+              "decline",
+              "take_control",
+              "return_control",
+              "skip_round"
+            ],
+            "title": "Action",
+            "description": "本人或工作人员动作；条件字段与权限见 live.md 命令表"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id",
+            "description": "亮灯、特别心动、发言、上下台或移出的对象账号 ID"
+          },
+          "targets": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 3,
+            "title": "Targets",
+            "description": "主嘉宾私密选择的候选 ID，可提交空数组"
+          },
+          "value": {
+            "type": "boolean",
+            "title": "Value",
+            "description": "确认/开启为 true，撤回/暂不愿意/下台为 false",
+            "default": false
+          },
+          "seconds": {
+            "type": "integer",
+            "maximum": 600.0,
+            "minimum": 1.0,
+            "title": "Seconds",
+            "description": "extend 延长秒数，仅截止前有效",
+            "default": 60
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Display Name",
+            "description": "accept 时授权公开的称呼，不可为空白",
+            "default": ""
+          },
+          "introduction": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Introduction",
+            "description": "accept 时本人授权公开的介绍",
+            "default": ""
+          },
+          "consent_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "live-trial-v1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consent Version",
+            "description": "accept 必须提交本期告知版本"
+          },
+          "device_checked": {
+            "type": "boolean",
+            "title": "Device Checked",
+            "description": "仅 trtc 模式的非观众须完成设备检测；disabled 不记录为通过",
+            "default": false
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Reason",
+            "description": "移出、接管、交还、跳轮须填写非空白原因",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "command_id",
+          "expected_revision",
+          "action"
+        ],
+        "title": "LiveCommand"
+      },
+      "LiveActionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LiveActionRecord"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "has_more"
+        ],
+        "title": "LiveActionList"
+      },
+      "LiveActionRecord": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected"
+            ],
+            "title": "Outcome",
+            "default": "accepted"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "created_at": {
+            "type": "integer",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "action",
+          "revision",
+          "created_at"
+        ],
+        "title": "LiveActionRecord"
+      },
+      "LiveCredentials": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "rtc",
+              "cdn"
+            ],
+            "title": "Mode"
+          },
+          "sdk_app_id": {
+            "type": "integer",
+            "title": "Sdk App Id",
+            "default": 0
+          },
+          "room_id": {
+            "type": "integer",
+            "title": "Room Id",
+            "default": 0
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          },
+          "user_sig": {
+            "type": "string",
+            "title": "User Sig",
+            "default": ""
+          },
+          "private_map_key": {
+            "type": "string",
+            "title": "Private Map Key",
+            "default": ""
+          },
+          "publish": {
+            "type": "boolean",
+            "title": "Publish",
+            "default": false
+          },
+          "playback_url": {
+            "type": "string",
+            "title": "Playback Url",
+            "default": ""
+          },
+          "expires_at": {
+            "type": "integer",
+            "title": "Expires At"
+          },
+          "media_epoch": {
+            "type": "integer",
+            "title": "Media Epoch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "expires_at",
+          "media_epoch"
+        ],
+        "title": "LiveCredentials"
+      },
+      "LiveResults": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LiveOpportunity"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "session_ended": {
+            "type": "boolean",
+            "title": "Session Ended"
+          },
+          "media_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "trtc"
+            ],
+            "title": "Media Mode",
+            "default": "trtc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "session_ended"
+        ],
+        "title": "LiveResults"
+      },
+      "LiveOpportunity": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "integer",
+            "title": "Session Id"
+          },
+          "peer_id": {
+            "type": "integer",
+            "title": "Peer Id"
+          },
+          "peer_name": {
+            "type": "string",
+            "title": "Peer Name"
+          },
+          "expires_at": {
+            "type": "integer",
+            "title": "Expires At"
+          },
+          "application_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "used",
+              "expired"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "peer_id",
+          "peer_name",
+          "expires_at",
+          "application_id",
+          "status"
+        ],
+        "title": "LiveOpportunity"
+      },
+      "app__schemas__live_v2__LiveReportRequest": {
+        "properties": {
+          "target_id": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Target Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 2,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target_id",
+          "reason"
+        ],
+        "title": "LiveReportRequest"
+      },
+      "LiveReport": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "target_id": {
+            "type": "integer",
+            "title": "Target Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "title": "Status"
+          },
+          "resolution": {
+            "type": "string",
+            "title": "Resolution",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "target_id",
+          "reason",
+          "status"
+        ],
+        "title": "LiveReport"
+      },
+      "LiveReportResolution": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 2,
+            "title": "Reason",
+            "description": "工作人员处置结论，不向场次公开广播"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "LiveReportResolution"
+      },
+      "ApplicationCreateRequest": {
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "live_opportunity_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Opportunity Id",
+            "description": "四轮直播 v2 完成交流后的共享免费申请机会"
+          }
+        },
+        "type": "object",
+        "title": "ApplicationCreateRequest"
+      },
+      "ApplicationResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "from_user_id": {
+            "type": "integer",
+            "title": "From User Id"
+          },
+          "to_user_id": {
+            "type": "integer",
+            "title": "To User Id"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "status": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "title": "Status"
+          },
+          "expire_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expire At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "from_user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RelationUserSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to_user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RelationUserSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live_opportunity_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Opportunity Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "from_user_id",
+          "to_user_id",
+          "message",
+          "status",
+          "expire_at",
+          "created_at"
+        ],
+        "title": "ApplicationResponse"
+      },
+      "RelationUserSummary": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "nickname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nickname"
+          },
+          "avatar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar"
+          },
+          "age": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age"
+          },
+          "city_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "nickname",
+          "avatar",
+          "age",
+          "city_code"
+        ],
+        "title": "RelationUserSummary"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

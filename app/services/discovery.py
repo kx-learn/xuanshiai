@@ -1019,16 +1019,38 @@ async def create_application(db: AsyncSession, viewer_id: int, target_id: int, r
         target_status = int((target_auth.mappings().first() or {}).get("realname_status") or 0)
         if target_status != 2:
             raise HTTPException(403, detail="对方尚未完成实名认证，暂时无法发起认识申请")
-    existing = await db.execute(text("SELECT id, status FROM match_apply WHERE ((from_user_id = :from_id AND to_user_id = :to_id) OR (from_user_id = :to_id AND to_user_id = :from_id)) AND status IN (0, 1) LIMIT 1"), {"from_id": viewer_id, "to_id": target_id})
+    live_grant = None
+    if request.live_opportunity_id is not None:
+        if viewer.get('realname_status') != 2:
+            raise HTTPException(403, detail='直播免费机会不能绕过实名认证')
+        first, second = sorted((viewer_id, target_id))
+        grant_result = await db.execute(text('SELECT id, application_id, expires_at FROM live_v2_opportunity WHERE id=:id AND first_user_id=:first AND second_user_id=:second FOR UPDATE'),
+            {'id': request.live_opportunity_id, 'first': first, 'second': second})
+        live_grant = grant_result.mappings().first()
+        if not live_grant:
+            raise HTTPException(403, detail='此直播机会不属于双方')
+        if live_grant['application_id']:
+            # The opportunity lock is a current read; use the same semantics after
+            # waiting for the opposite party's transaction under MySQL REPEATABLE READ.
+            replay = await db.execute(text('SELECT id,from_user_id,to_user_id,message,status,expire_at,created_at FROM match_apply WHERE id=:id FOR UPDATE'), {'id': live_grant['application_id']})
+            return ApplicationResponse(**replay.mappings().one(), live_opportunity_id=live_grant['id'])
+        if live_grant['expires_at'] <= datetime.now(UTC).replace(tzinfo=None):
+            raise HTTPException(410, detail='直播专属申请机会已过期')
+    existing = await db.execute(text("SELECT id, status FROM match_apply WHERE ((from_user_id = :from_id AND to_user_id = :to_id) OR (from_user_id = :to_id AND to_user_id = :from_id)) AND status IN (0, 1) LIMIT 1 FOR UPDATE"), {"from_id": viewer_id, "to_id": target_id})
     if existing.first():
         raise HTTPException(409, detail="双方已有进行中的认识申请或匹配")
     quota_key = await _quota_key("apply", viewer_id)
-    vip = await _is_vip(db, viewer_id)
-    if await _consume_apply_quota(db, viewer_id, vip):
-        await _record_quota_usage(db, viewer_id, "apply", "package" if vip else "free", "Daily application quota", target_id)
+    daily_quota_consumed = False
     expire_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=48)
     try:
+        if live_grant is None:
+            vip = await _is_vip(db, viewer_id)
+            daily_quota_consumed = await _consume_apply_quota(db, viewer_id, vip)
+            if daily_quota_consumed:
+                await _record_quota_usage(db, viewer_id, "apply", "package" if vip else "free", "Daily application quota", target_id)
         result = await db.execute(text("INSERT INTO match_apply (from_user_id, to_user_id, message, status, expire_at) VALUES (:from_id, :to_id, :message, 0, :expire_at)"), {"from_id": viewer_id, "to_id": target_id, "message": request.message, "expire_at": expire_at})
+        if live_grant is not None:
+            await db.execute(text('UPDATE live_v2_opportunity SET application_id=:application_id,used_at=UTC_TIMESTAMP() WHERE id=:id'), {'application_id': result.lastrowid, 'id': live_grant['id']})
         await db.execute(text("INSERT IGNORE INTO user_swipe_record (user_id, target_user_id, action, scene) VALUES (:user_id, :target_id, 3, 'recommend')"), {"user_id": viewer_id, "target_id": target_id})
         await _notify(db, target_id, "match_application", "收到新的认识申请", request.message or "有人申请认识你", viewer_id, result.lastrowid)
         await db.commit()
@@ -1037,10 +1059,11 @@ async def create_application(db: AsyncSession, viewer_id: int, target_id: int, r
             await db.rollback()
         except Exception:
             logger.exception("Failed to roll back application create transaction")
-        await _refund_quota_after_database_failure(quota_key)
+        if daily_quota_consumed:
+            await _refund_quota_after_database_failure(quota_key)
         raise
     created = await db.execute(text("SELECT id, from_user_id, to_user_id, message, status, expire_at, created_at FROM match_apply WHERE id = :id"), {"id": result.lastrowid})
-    return ApplicationResponse(**created.mappings().one())
+    return ApplicationResponse(**created.mappings().one(), live_opportunity_id=request.live_opportunity_id)
 
 
 async def list_applications(db: AsyncSession, viewer_id: int, incoming: bool, page: int, page_size: int) -> ApplicationPage:
@@ -1074,6 +1097,7 @@ async def list_applications(db: AsyncSession, viewer_id: int, incoming: bool, pa
         LEFT JOIN user_profile_completion tc ON tc.user_id = tu.id
         WHERE a.{field} = :user_id{visible}"""), params)).scalar() or 0)
     result = await db.execute(text(f"""SELECT a.id, a.from_user_id, a.to_user_id, a.message, a.status, a.expire_at, a.created_at,
+        (SELECT g.id FROM live_v2_opportunity g WHERE g.application_id=a.id) AS live_opportunity_id,
         fu.nickname AS from_nickname, fu.avatar AS from_avatar, fu.birthday AS from_birthday, fp.residence_city_code AS from_city_code,
         tu.nickname AS to_nickname, tu.avatar AS to_avatar, tu.birthday AS to_birthday, tp.residence_city_code AS to_city_code
         FROM match_apply a
@@ -1104,7 +1128,7 @@ async def list_applications(db: AsyncSession, viewer_id: int, incoming: bool, pa
 
 async def respond_application(db: AsyncSession, viewer_id: int, application_id: int, accepted: bool, request: ApplicationRejectRequest | None = None) -> ApplicationResponse:
     await _expire_pending_applications(db)
-    result = await db.execute(text("SELECT id, from_user_id, to_user_id, message, status, expire_at, created_at FROM match_apply WHERE id = :id AND to_user_id = :user_id FOR UPDATE"), {"id": application_id, "user_id": viewer_id})
+    result = await db.execute(text("SELECT id, from_user_id, to_user_id, message, status, expire_at, created_at, (SELECT g.id FROM live_v2_opportunity g WHERE g.application_id=match_apply.id) AS live_opportunity_id FROM match_apply WHERE id = :id AND to_user_id = :user_id FOR UPDATE"), {"id": application_id, "user_id": viewer_id})
     row = result.mappings().first()
     if not row:
         raise HTTPException(404, detail="认识申请不存在")
@@ -1142,12 +1166,12 @@ async def respond_application(db: AsyncSession, viewer_id: int, application_id: 
     else:
         await _notify(db, row["from_user_id"], "match_application_rejected", "认识申请未通过", (request.reason if request else None) or "对方暂时婉拒了你的申请", viewer_id, application_id)
         created_at = row["created_at"]
-        if created_at is not None and created_at.date() == datetime.now(UTC).date():
+        if not row.get('live_opportunity_id') and created_at is not None and created_at.date() == datetime.now(UTC).date():
             await refund_daily(await _quota_key("apply", row["from_user_id"]))
             await db.execute(text("INSERT INTO user_quota_usage (user_id,quota_code,quota_date,source,reason,target_user_id) VALUES (:user_id,'apply',:quota_date,'refund','申请被拒绝，返还申请次数',:target_user_id)"), {"user_id": row["from_user_id"], "quota_date": date.today(), "target_user_id": viewer_id})
     await db.commit()
     updated = await db.execute(text("SELECT id, from_user_id, to_user_id, message, status, expire_at, created_at FROM match_apply WHERE id = :id"), {"id": application_id})
-    return ApplicationResponse(**updated.mappings().one())
+    return ApplicationResponse(**updated.mappings().one(), live_opportunity_id=row.get('live_opportunity_id'))
 
 
 async def _expire_pending_applications(db: AsyncSession) -> None:
