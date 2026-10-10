@@ -19,7 +19,8 @@ from app.db.ai_schema import PROFILE_DIMENSIONS
 from app.schemas.ai_moxiang import HIGH_CONFIDENCE_THRESHOLD
 from app.services.ai.consents import _lock_privacy_revision
 from app.services.ai.profile import (
-    PROFILE_CONSENT_SCOPE, PROFILE_POLICY_REVISION, _load_revision_vector,
+    PROFILE_CONSENT_SCOPE, _consent_snapshot,
+    _load_latest_consent, _load_revision_vector,
 )
 from app.services.ai.tasks import AiTaskRecord, TaskError, enqueue_task, fail_task
 from app.services.idempotency import _payload_hash
@@ -49,16 +50,18 @@ def _dump(value: Any) -> str:
 
 
 async def _consent(db: AsyncSession, user_id: int) -> dict[str, Any] | None:
-    row = (await db.execute(text(
-        "SELECT version,policy_revision,granted_at FROM ai_consent_grant "
-        "WHERE user_id=:user_id AND scope=:scope AND revoked_at IS NULL "
-        "ORDER BY granted_at DESC LIMIT 1"
-    ), {"user_id": user_id, "scope": PROFILE_CONSENT_SCOPE})).mappings().first()
+    row = await _load_latest_consent(db, user_id, PROFILE_CONSENT_SCOPE)
     if not row:
         return None
-    return {"scope": PROFILE_CONSENT_SCOPE, "version": str(row["version"]),
-            "consent_version": str(row["version"]), "granted_at": _iso(row["granted_at"]),
-            "policy_revision": str(row.get("policy_revision") or PROFILE_POLICY_REVISION)}
+    return {**_consent_snapshot(row), "consent_version": str(row["version"])}
+
+
+def _matches_consent_snapshot(snapshot: dict, consent: dict) -> bool:
+    # 同秒重授可有相同时间/版本；必须以已有 grant 行 id 区分代际。旧无 id 安全失效。
+    return bool(consent.get("grant_id")) and all(
+        snapshot.get(key) == consent.get(key)
+        for key in ("grant_id", "version", "granted_at", "policy_revision")
+    )
 
 
 async def _require_consent(db: AsyncSession, user_id: int) -> dict[str, Any]:
@@ -102,7 +105,7 @@ async def _latest_revision(db: AsyncSession, user_id: int, subject: str) -> dict
     # 旧正式数据保留，但撤回后重新授权不能使旧资料自动复活。
     if row["schema_version"] == CONTINUOUS_DRAFT_SCHEMA_VERSION:
         meta = _json(row["consent_snapshot_json"], {})
-        if any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+        if not _matches_consent_snapshot(meta, consent):
             return None
     elif (_iso(row.get("created_at")) or "") < consent["granted_at"]:
         return None
@@ -210,7 +213,7 @@ async def _subject_state(db: AsyncSession, user_id: int, subject: str, consent: 
         return state
     meta = _json(draft["consent_snapshot_json"], {}).get("continuous", {})
     grant = _json(draft["consent_snapshot_json"], {})
-    if any(grant.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+    if not _matches_consent_snapshot(grant, consent):
         return state
     state.update(draft_id=str(draft["draft_id"]), expected_revision=int(draft["expected_revision"]))
     state["has_updates"] = bool(set(_versions(candidates)) - set(meta.get("candidate_versions", [])))
@@ -296,6 +299,11 @@ async def build_continuous_draft(db: AsyncSession, user_id: int, subject: str, *
         "SELECT * FROM ai_profile_draft WHERE user_id=:user_id AND subject=:subject AND schema_version=:schema "
         "AND status='draft' ORDER BY id DESC LIMIT 1 FOR UPDATE"
     ), {"user_id": user_id, "subject": subject, "schema": CONTINUOUS_DRAFT_SCHEMA_VERSION})).mappings().first()
+    if existing and not _matches_consent_snapshot(_json(existing["consent_snapshot_json"], {}), consent):
+        # 拒读旧身份后仍允许合法重建，不能让旧 draft 永久占住成稿入口。
+        await db.execute(text("UPDATE ai_profile_draft SET status='stale' WHERE draft_id=:id"), {"id": existing["draft_id"]})
+        await db.execute(text("UPDATE ai_profile_preview SET status='stale' WHERE draft_id=:id AND status='active'"), {"id": existing["draft_id"]})
+        existing = None
     if existing and not refresh:
         await ensure_continuous_preview(db, str(existing["draft_id"]), user_id, int(existing["expected_revision"]), idempotency_key)
         await _remember(db, user_id, "continuous-build", idempotency_key, payload, {"draft_id": existing["draft_id"]})
@@ -312,23 +320,28 @@ async def build_continuous_draft(db: AsyncSession, user_id: int, subject: str, *
     # 未确认稿显式 refresh：保留用户编辑/删除，只将尚未纳入的证据合并。
     snapshot = {str(row["field_key"]): row for row in baseline}
     previous_versions: set[str] = set(consumed)
+    deleted_field_keys: set[str] = set()
     if existing:
         existing_meta = _json(existing["consent_snapshot_json"], {}).get("continuous", {})
         previous_versions.update(existing_meta.get("candidate_versions", []))
+        # 删除行在新冻结稿中不再落库，故删除意图必须随元数据跨 refresh 累计。
+        deleted_field_keys.update(map(str, existing_meta.get("deleted_field_keys", [])))
         fields = (await db.execute(text("SELECT * FROM ai_profile_draft_field WHERE draft_id=:id ORDER BY id"),
                                    {"id": existing["draft_id"]})).mappings().all()
         for row in fields:
             if row["confirmation_status"] in {"deleted", "rejected"}:
-                snapshot.pop(str(row["field_key"]), None)
+                deleted_field_keys.add(str(row["field_key"]))
             else:
                 snapshot[str(row["field_key"])] = dict(row)
+    for key in deleted_field_keys:
+        snapshot.pop(key, None)
     for row in candidates:
         if f"{row['candidate_id']}:{row['content_hash']}" not in previous_versions:
-            # 结构化候选照旧按自身字段键落到快照（不涉及替换语义）；entry 候选
-            # 只在带替换目标、且目标仍是当前快照里的 entry 行时按同 key 覆盖，
-            # 成为该条目的新版本。目标已被用户删除/驳回、或目标 key 不属于
-            # entry 行时一律回退新 key——绝不复活墓碑，也不误并到别的字段。
+            # 显式删除/驳回的目标在本轮未确认链上一直被排除；其他 entry
+            # 只对当前快照中的 entry 目标按同 key 覆盖，未知目标回退新 key。
             target_key = str(row.get("field_key") or "")
+            if target_key in deleted_field_keys:
+                continue
             if not target_key:
                 key = f"entry_{row['candidate_id']}"
             elif str(row.get("field_kind") or "structured") == "structured":
@@ -342,7 +355,9 @@ async def build_continuous_draft(db: AsyncSession, user_id: int, subject: str, *
         raise LookupError("CONTINUOUS_BUILD_NOT_READY")
     draft_id = uuid.uuid4().hex
     meta = {**consent, "continuous": {"baseline_revision_id": baseline_id,
-            "source_revision": vector.as_dict(), "candidate_versions": _versions(candidates)}}
+            "source_revision": vector.as_dict(),
+            "candidate_versions": sorted(previous_versions | set(_versions(candidates))),
+            "deleted_field_keys": sorted(deleted_field_keys)}}
     await db.execute(text(
         "INSERT INTO ai_profile_draft (draft_id,user_id,subject,status,expected_revision,consent_snapshot_json,"
         "policy_revision,prompt_version,schema_version) VALUES (:id,:user,:subject,'draft',0,:meta,:policy,:prompt,:schema)"
@@ -382,7 +397,7 @@ async def ensure_continuous_preview(db: AsyncSession, draft_id: str, user_id: in
     if draft["status"] != "draft" or int(draft["expected_revision"]) != expected_revision:
         raise ValueError("DRAFT_VERSION_CONFLICT")
     meta = _json(draft["consent_snapshot_json"], {})
-    if any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+    if not _matches_consent_snapshot(meta, consent):
         raise PermissionError("AI_CONSENT_REQUIRED")
     row = (await db.execute(text(
         "SELECT p.preview_id,p.status,t.status AS task_status FROM ai_profile_preview p "
@@ -457,7 +472,7 @@ async def generate_continuous_preview_handler(db: AsyncSession, task: AiTaskReco
         return None
     consent = await _require_consent(db, task.owner_user_id)
     meta = _json(draft["consent_snapshot_json"], {})
-    if any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+    if not _matches_consent_snapshot(meta, consent):
         return None
     fields = [dict(r) for r in (await db.execute(text(
         "SELECT * FROM ai_profile_draft_field WHERE draft_id=:id AND confirmation_status NOT IN ('deleted','rejected') ORDER BY id"
@@ -508,7 +523,7 @@ async def get_continuous_preview(db: AsyncSession, preview_id: str, user_id: int
     if not row or row["schema_version"] != CONTINUOUS_DRAFT_SCHEMA_VERSION or row["draft_status"] in {"deleted", "cancelled"}:
         return None
     meta = _json(row.get("consent_snapshot_json"), {})
-    if any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+    if not _matches_consent_snapshot(meta, consent):
         raise PermissionError("AI_CONSENT_REQUIRED")
     envelope = _json(row.get("content"), {})
     if not isinstance(envelope, dict):
@@ -556,7 +571,7 @@ async def confirm_continuous_preview(db: AsyncSession, preview_id: str, user_id:
     if int(row["expected_revision"]) != expected_revision:
         raise ValueError("DRAFT_VERSION_CONFLICT")
     meta = draft.consent_snapshot
-    if any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision")):
+    if not _matches_consent_snapshot(meta, consent):
         raise PermissionError("AI_CONSENT_REQUIRED")
     if replay is not None:
         return {**replay, "replayed": True}

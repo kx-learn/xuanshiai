@@ -52,7 +52,6 @@ from app.services.ai.profile import (
     ProfileTurn,
     _entry_digest_with_keys,
     _insert_turn,
-    _load_published_entry_rows,
     _load_revision_fields,
     find_turn_by_client_id,
     hash_request,
@@ -400,16 +399,15 @@ def _existing_candidates_digest(candidates: tuple[CandidateRecord, ...]) -> str:
 async def _continuous_entry_targets(
     db: AsyncSession, owner_user_id: int, subjects: tuple[str, ...]
 ) -> tuple[str | None, dict[str, frozenset[str]], dict[str, dict[str, dict[str, Any]]]]:
-    """双主体正式稿条目：摘要（含 field_key）+ 合法替换目标 + 目标内容索引。
-
-    摘要只含外部已发布内容（field_key 是服务端生成的条目键，不含用户隐私以外
-    的信息）；``entry_rows`` 供成稿替换后按内容定位需要失效的旧 active 候选。
-    """
+    """当前授权下双主体正式条目：摘要、合法 key 与内容索引使用同一过滤源。"""
+    from app.services.ai.continuous import _latest_revision, _revision_fields
     digest_lines: list[str] = []
     keys_by_subject: dict[str, frozenset[str]] = {}
     rows_by_subject: dict[str, dict[str, dict[str, Any]]] = {}
     for subject in subjects:
-        rows = await _load_published_entry_rows(db, owner_user_id, subject)
+        revision = await _latest_revision(db, owner_user_id, subject)
+        rows = [row for row in await _revision_fields(db, int(revision["id"]) if revision else None)
+                if row.get("field_kind") == "entry" and str(row.get("content") or "").strip()]
         digest = _entry_digest_with_keys(rows)
         keys_by_subject[subject] = frozenset(
             str(row.get("field_key")) for row in rows if str(row.get("field_key") or "")
@@ -458,21 +456,27 @@ async def _dismiss_replaced_entry_candidates(
     owner_user_id: int,
     subject: str,
     replaced: tuple[tuple[str, str], ...],
+    retained_hashes: frozenset[str] = frozenset(),
 ) -> int:
-    """把被替换条目的旧 active 候选移出候选池（保留行，保留审计）。
+    """淘汰同主体、同目标的旧 active 修订（含未确认版本），保留审计行。
 
-    被替换内容可能沉淀在更早的会话里，所以按 (user, subject, content_hash)
-    更新而不限当前会话；只动 entry 类、active 状态的候选，已 promoted /
-    dismissed 的行保持原状（正式稿与审计不受影响）。
+    无目标 key 的正式原值按内容定位；带目标的中间版本按目标定位。
+    本次明确抽取的版本不淘汰，legacy 不调用此链路。
     """
     hashes = sorted({content_hash for _, content_hash in replaced})
     if not hashes:
         return 0
     placeholders = ", ".join(f":hash_{idx}" for idx in range(len(hashes)))
+    targets = sorted({field_key for field_key, _ in replaced})
+    target_placeholders = ", ".join(f":target_{idx}" for idx in range(len(targets)))
+    keep_placeholders = ", ".join(f":keep_{idx}" for idx in range(len(retained_hashes)))
+    keep_clause = f" AND content_hash NOT IN ({keep_placeholders})" if retained_hashes else ""
     params: dict[str, Any] = {
         "user_id": owner_user_id,
         "subject": subject,
         **{f"hash_{idx}": value for idx, value in enumerate(hashes)},
+        **{f"target_{idx}": value for idx, value in enumerate(targets)},
+        **{f"keep_{idx}": value for idx, value in enumerate(sorted(retained_hashes))},
     }
     result = await db.execute(
         text(
@@ -480,7 +484,9 @@ async def _dismiss_replaced_entry_candidates(
             "updated_at = UTC_TIMESTAMP() "
             "WHERE user_id = :user_id AND subject = :subject "
             "AND field_kind = 'entry' AND status = 'active' "
-            f"AND content_hash IN ({placeholders})"
+            f"AND (field_key IN ({target_placeholders}) OR "
+            f"(field_key IS NULL AND content_hash IN ({placeholders})))"
+            f"{keep_clause}"
         ),
         params,
     )
@@ -998,6 +1004,7 @@ async def extract_journey_candidates(
                     owner_user_id=task.owner_user_id,
                     subject=candidate_subject,
                     replaced=replaced_pairs,
+                    retained_hashes=frozenset(item.content_hash for item in extracted),
                 )
     await _enforce_entry_dimension_cap(db, session.session_id)
     if continuous_v2:

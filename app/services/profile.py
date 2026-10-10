@@ -489,6 +489,16 @@ async def update_nickname(
 
 
 async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
+    # 锁序统一：先锁 users 行，再写 user_profile_completion。
+    # 「我的」页并行请求 /users/me/completion 与 /users/me/overview（后者内部
+    # 也调用本函数）会各自 UPSERT user_profile_completion 再 UPDATE users；
+    # 与 update_profile 的「先锁 users，再算完整度」形成 AB-BA 环，
+    # MySQL 抛 1213 死锁使资料完整度 500。与 _lock_profile_update 同序后，
+    # 并发写在此等待而非互锁。
+    await db.execute(
+        text("SELECT id FROM users WHERE id = :user_id FOR UPDATE"),
+        {"user_id": user_id},
+    )
     result = await db.execute(
         text("""SELECT u.gender, u.birthday, u.is_married, u.avatar, u.is_single_pledge,
                       COALESCE(ua.realname_status, 0) AS realname_status,

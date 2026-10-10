@@ -344,10 +344,10 @@ async def _load_consent_snapshot(
 ) -> dict[str, Any] | None:
     result = await db.execute(
         text(
-            "SELECT user_id, scope, version, policy_revision, granted_at "
+            "SELECT id AS grant_id, user_id, scope, version, policy_revision, granted_at "
             "FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-            "ORDER BY granted_at DESC LIMIT 1"
+            "ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": user_id, "scope": scope},
     )
@@ -356,6 +356,7 @@ async def _load_consent_snapshot(
         return None
     granted_at = row.get("granted_at")
     return {
+        "grant_id": str(row.get("grant_id") or ""),
         "scope": row.get("scope") or scope,
         "version": row.get("version") or "",
         "policy_revision": row.get("policy_revision") or "",
@@ -366,21 +367,22 @@ async def _load_consent_snapshot(
 async def _consent_snapshot_is_current(
     db: AsyncSession, user_id: int, snapshot: dict[str, Any]
 ) -> bool:
-    """Require the pinned grant/version to still be active before projection write."""
+    """Require the pinned grant generation to remain active before projection write."""
     scope = str(snapshot.get("scope") or "")
     version = str(snapshot.get("version") or "")
-    if scope != PROFILE_CONSENT_SCOPE or not version:
+    grant_id = str(snapshot.get("grant_id") or "")
+    if scope != PROFILE_CONSENT_SCOPE or not version or not grant_id:
         return False
     result = await db.execute(
         text(
-            "SELECT version, policy_revision, granted_at FROM ai_consent_grant "
+            "SELECT id AS grant_id, version, policy_revision, granted_at FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND version = :version "
-            "AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1"
+            "AND revoked_at IS NULL ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": user_id, "scope": scope, "version": version},
     )
     row = await _first_row(result)
-    if row is None:
+    if row is None or str(row.get("grant_id") or "") != grant_id:
         return False
     if snapshot.get("policy_revision") and str(row.get("policy_revision") or "") != str(
         snapshot["policy_revision"]

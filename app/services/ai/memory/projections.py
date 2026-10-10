@@ -47,8 +47,8 @@ __all__ = [
     "PROFILE_CONSENT_SCOPE",
 ]
 
-# 复用 consents.py 的读取契约：同一张 ai_consent_grant、同一组列
-# （scope/version/policy_revision/granted_at，revoked_at IS NULL 为有效）。
+# ai_consent_grant.id is the durable generation identity; public consent fields
+# remain unchanged while internal snapshots bind to this id.
 PROFILE_CONSENT_SCOPE = "profile_text_extract"
 
 
@@ -65,13 +65,11 @@ class ProjectionGrantNotFound(Exception):
 
 
 def derive_consent_snapshot_id(consent_row: dict[str, Any]) -> str:
-    """服务端派生授权快照 ID：绑定当前 (scope, version, policy_revision, granted_at)。
-
-    调用方传入的 ``consent_snapshot_id`` 必须等于 freshly derived 的值，
-    因此 grant/read 永远引用当前快照，过期引用直接拒绝。
-    """
-
+    """派生绑定持久 grant_id 的快照；旧的无 id 快照不能伪装为当前授权。"""
+    grant_id = consent_row.get("grant_id")
+    generation = "legacy-missing-grant-id" if grant_id is None else str(grant_id)
     material = [
+        generation,
         str(consent_row.get("scope") or ""),
         str(consent_row.get("version") or ""),
         str(consent_row.get("policy_revision") or ""),
@@ -100,9 +98,9 @@ class MemoryProjectionService:
     # ------------------------------------------------------------------
 
     _SQL_CONSENT_READ = (
-        "SELECT scope, version, policy_revision, granted_at FROM ai_consent_grant "
+        "SELECT id AS grant_id, scope, version, policy_revision, granted_at FROM ai_consent_grant "
         "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-        "ORDER BY granted_at DESC LIMIT 1"
+        "ORDER BY id DESC LIMIT 1"
     )
     _SQL_GRANT_UPSERT = (
         "INSERT INTO ai_memory_projection_grant "
@@ -470,11 +468,11 @@ class MemoryProjectionService:
         "AND data_category = :data_category"
     )
     _SQL_CONSENT_BATCH_READ = (
-        "SELECT user_id, scope, version, policy_revision, granted_at "
+        "SELECT user_id, id AS grant_id, scope, version, policy_revision, granted_at "
         "FROM ai_consent_grant WHERE user_id IN ({owners}) "
-        "AND scope = :scope AND revoked_at IS NULL ORDER BY granted_at DESC"
-    )
+        "AND scope = :scope AND revoked_at IS NULL ORDER BY id DESC"
 
+    )
     async def read_active_batch(
         self,
         *,
@@ -781,7 +779,7 @@ class MemoryProjectionService:
                 and str(existing["consent_snapshot_id"]) == snapshot_id
                 and str(existing["policy_revision"]) == self._current_revision()):
             return existing
-        # 同内容的历史版本（如 revoke→re-grant 后重建）：接管激活，不插新版。
+        # Never rebind payload created under another consent generation.
         same_hash = (
             await self._db.execute(
                 text(self._SQL_PROJECTION_READ_BY_HASH),
@@ -792,7 +790,9 @@ class MemoryProjectionService:
                 },
             )
         ).mappings().first()
-        if same_hash is not None:
+        if (same_hash is not None
+                and str(same_hash["consent_snapshot_id"]) == snapshot_id
+                and str(same_hash["policy_revision"]) == self._current_revision()):
             await self._db.execute(
                 text(self._SQL_PROJECTION_INVALIDATE),
                 {

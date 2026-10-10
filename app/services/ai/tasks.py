@@ -442,17 +442,19 @@ async def _load_current_completion_context(
     if scope:
         consent_result = await db.execute(
             text(
-                "SELECT version, policy_revision, granted_at "
+                "SELECT id AS grant_id, version, policy_revision, granted_at "
                 "FROM ai_consent_grant "
                 "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-                "ORDER BY granted_at DESC LIMIT 1 FOR UPDATE"
+                "ORDER BY id DESC LIMIT 1 FOR UPDATE"
             ),
             {"user_id": task.owner_user_id, "scope": scope},
         )
         current_consent = await _first_row(consent_result)
         consent_matches = current_consent is not None and str(
             current_consent["version"]
-        ) == str(snapshot.get("version") or "")
+        ) == str(snapshot.get("version") or "") and str(
+            current_consent.get("grant_id") or ""
+        ) == str(snapshot.get("grant_id") or "")
         if current_consent is not None and snapshot.get("policy_revision"):
             consent_matches = consent_matches and str(
                 current_consent["policy_revision"]

@@ -433,6 +433,9 @@ class CompatibilityStore:
             "relationship_revision": revision.relationship,
             "policy_revision": revision.policy,
             "consent_snapshot_json": {
+                # R5：快照必须绑定持久 grant 代际，与 seed_consent 一致；
+                # 缺少 grant_id 的旧快照按失效处理，不再被读取链接受。
+                "grant_id": str(int(user_id) * 10 + 2),
                 "scope": "profile_text_extract",
                 "version": "profile-text-v1",
                 "policy_revision": "ai-policy-2026-08-07-v1",
@@ -578,6 +581,7 @@ class CompatibilityStore:
     def seed_consent(self, user_id: int, scope: str) -> None:
         self.consents.append(
             {
+                "grant_id": int(user_id) * 10 + (2 if scope == "profile_text_extract" else 3),
                 "user_id": int(user_id),
                 "scope": scope,
                 "version": (
@@ -640,12 +644,14 @@ class CompatibilityStore:
             "consent_snapshot_pair_json": json.dumps(
                 {
                     "viewer": {
+                        "grant_id": 103,
                         "scope": COMPATIBILITY_CONSENT_SCOPE,
                         "version": "compatibility-shadow-v1",
                         "policy_revision": "ai-policy-2026-08-07-v1",
                         "granted_at": "2026-01-01T00:00:00",
                     },
                     "target": {
+                        "grant_id": 423,
                         "scope": COMPATIBILITY_CONSENT_SCOPE,
                         "version": "compatibility-shadow-v1",
                         "policy_revision": "ai-policy-2026-08-07-v1",
@@ -912,12 +918,14 @@ async def test_write_shadow_persists_compatibility_rule_v1_shadow_snapshot(
     target_rev = compatibility_store.revision_rows[42]
     consent = {
         "viewer": {
+            "grant_id": 103,
             "scope": COMPATIBILITY_CONSENT_SCOPE,
             "version": "compatibility-shadow-v1",
             "policy_revision": "ai-policy-2026-08-07-v1",
             "granted_at": datetime(2026, 1, 1),
         },
         "target": {
+            "grant_id": 423,
             "scope": COMPATIBILITY_CONSENT_SCOPE,
             "version": "compatibility-shadow-v1",
             "policy_revision": "ai-policy-2026-08-07-v1",

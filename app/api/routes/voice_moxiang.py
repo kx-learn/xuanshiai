@@ -1639,6 +1639,7 @@ async def moxiang_master_conversation(
                     ws,
                     orchestrator,
                     rev_text,
+                    request_id=request_id,
                     subject=turn_subject,
                     build_context=await _journey_build_context(
                         turn_session_id,

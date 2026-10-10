@@ -291,6 +291,7 @@ class SearchStore:
     ) -> None:
         self.consents.append(
             {
+                "grant_id": user_id * 10 + (1 if scope == "search_parse" else 2),
                 "user_id": user_id,
                 "scope": scope,
                 "version": "search-parse-v1",
@@ -380,6 +381,7 @@ class SearchStore:
         ):
             self.consents.append(
                 {
+                    "grant_id": subject_user_id * 10 + 2,
                     "user_id": subject_user_id,
                     "scope": "profile_text_extract",
                     "version": "profile-text-v1",
@@ -388,6 +390,7 @@ class SearchStore:
                 }
             )
         effective_consent = consent_snapshot or {
+            "grant_id": subject_user_id * 10 + 2,
             "scope": "profile_text_extract",
             "version": "profile-text-v1",
             "policy_revision": "ai-policy-2026-08-07-v1",

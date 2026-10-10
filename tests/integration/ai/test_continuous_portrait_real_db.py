@@ -260,24 +260,24 @@ async def test_revoke_regrant_does_not_restore_portraits_or_history(real_db_sess
 
 
 @pytest.mark.asyncio
-async def test_grant_snapshot_uses_database_second_precision(real_db_session, monkeypatch):
-    from datetime import UTC, datetime, timedelta
-    from app.services.ai import consents
-    # 基准时间回退 2 秒：本用例只验证 granted_at 被截断到秒，不应依赖宿主与
-    # MySQL 容器的亚秒级时钟一致——容器时钟抖动约 1s 时，granted_at 可能落到
-    # 候选 created_at 之后，导致「授权后产生的证据」过滤误判为空。
-    now = datetime.now(UTC).replace(microsecond=900000) - timedelta(seconds=2)
-
-    class Clock:
-        @staticmethod
-        def now(tz):
-            return now
-
-    monkeypatch.setattr(consents, "datetime", Clock)
-    await seed(real_db_session)
-    consent = await continuous._require_consent(real_db_session, USER)
-    assert consent["granted_at"] == now.replace(tzinfo=None, microsecond=0).isoformat()
-    assert len(await continuous._candidates(real_db_session, USER, "personal", consent)) == 3
+async def test_grant_snapshot_uses_database_second_precision(real_db_session):
+    db = real_db_session
+    before = (await db.execute(text("SELECT UTC_TIMESTAMP()"))).scalar_one()
+    await seed(db)
+    after = (await db.execute(text("SELECT UTC_TIMESTAMP()"))).scalar_one()
+    grant = (await db.execute(text(
+        "SELECT id,granted_at FROM ai_consent_grant WHERE user_id=:user AND revoked_at IS NULL ORDER BY id DESC LIMIT 1"
+    ), {"user": USER})).mappings().one()
+    consent = await continuous._require_consent(db, USER)
+    assert before <= grant["granted_at"] <= after
+    assert grant["granted_at"].microsecond == 0
+    assert consent["granted_at"] == grant["granted_at"].isoformat()
+    assert consent["grant_id"] == str(grant["id"])
+    assert len(await continuous._candidates(db, USER, "personal", consent)) == 3
+    evidence_times = (await db.execute(text(
+        "SELECT created_at FROM ai_profile_candidate WHERE user_id=:user"
+    ), {"user": USER})).scalars().all()
+    assert evidence_times and all(created_at >= grant["granted_at"] for created_at in evidence_times)
 
 
 @pytest.mark.asyncio
@@ -453,10 +453,12 @@ async def test_same_hash_projection_rebinds_current_authorization(real_db_sessio
     await db.execute(text("UPDATE ai_memory_projection SET status=:status, consent_snapshot_id='cs_stale', policy_revision='old-policy' WHERE projection_id=:id"), {"status": status, "id": first["projection_id"]})
     assert await service.read_active(**dimension) is None
     rebound = await service.build(**dimension)
-    assert rebound["projection_id"] == first["projection_id"]
+    assert rebound["projection_id"] != first["projection_id"], "旧授权版本不得原样复活"
     assert rebound["consent_snapshot_id"] == first["consent_snapshot_id"]
     assert rebound["policy_revision"] == POLICY
     assert await service.read_active(**dimension) is not None
+    assert (await db.execute(text("SELECT status FROM ai_memory_projection WHERE projection_id=:id"),
+        {"id": first["projection_id"]})).scalar_one() == "invalidated"
 
 
 @pytest.mark.asyncio
@@ -743,8 +745,19 @@ async def test_refresh_after_draft_deletion_suppresses_missing_memory_field(
     assert len(fields) == 4, sorted(values)
     assert {"喜欢早睡", "爱吃辣"}.issubset(values)
 
+    # R2：第二次 refresh 仍需记住此前显式删除，不能从正式 baseline 加回。
+    await add_candidate(db, session, turn, "personal", "lifestyle", "interests", "喜欢周末散步")
+    await db.commit()
+    fourth = await build(db, refresh=True)
+    fields = (await db.execute(text(
+        "SELECT field_key,content FROM ai_profile_draft_field WHERE draft_id=:id"
+    ), {"id": fourth["draft_id"]})).mappings().all()
+    assert target_field_key not in {str(row["field_key"]) for row in fields}
+    assert target_value not in {str(row["content"]) for row in fields}
+    assert len(fields) == 5
+
     await generate(db, real_db_engine, monkeypatch)
-    await continuous.confirm_continuous_preview(db, third["preview_id"], USER, 0, "b4-confirm")
+    await continuous.confirm_continuous_preview(db, fourth["preview_id"], USER, 0, "b4-confirm")
     await db.commit()
 
     live = (await db.execute(text(
@@ -753,7 +766,7 @@ async def test_refresh_after_draft_deletion_suppresses_missing_memory_field(
         "ORDER BY revision_no DESC LIMIT 1)"
     ), {"user": USER})).scalars().all()
     live_values = {str(value) for value in live}
-    assert len(live_values) == 4
+    assert len(live_values) == 5
     assert target_value not in live_values
     assert {"喜欢早睡", "爱吃辣"}.issubset(live_values)
 
@@ -766,6 +779,110 @@ async def test_refresh_after_draft_deletion_suppresses_missing_memory_field(
     assert await projection.read_active(**dimension) is None
     rebuilt = await projection.build(**dimension)
     rebuilt_values = [str(entry["value"]) for entry in rebuilt["entries"]]
-    assert len(rebuilt_values) == 4
+    assert len(rebuilt_values) == 5
     assert target_value not in rebuilt_values
     assert {"喜欢早睡", "爱吃辣"}.issubset(set(rebuilt_values))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["personal", "ideal_partner"])
+async def test_extraction_targets_follow_current_authorization_after_regrant(
+    real_db_session, real_db_engine, monkeypatch, subject
+):
+    """R3：真实 Provider 请求、合法目标集合与索引都不能复活旧授权画像。"""
+    from app.services.ai.base import StructuredExtractResult
+    from app.services.ai.gateway import InvokeOutcome
+
+    db = real_db_session
+    await seed(db, subject)
+    first = await build(db, subject)
+    await generate(db, real_db_engine, monkeypatch)
+    await continuous.confirm_continuous_preview(db, first["preview_id"], USER, 0, "r3-publish")
+    await db.commit()
+    digest, keys, rows = await journey._continuous_entry_targets(db, USER, (subject,))
+    assert digest and keys[subject] and rows[subject]
+    assert all(key in digest for key in keys[subject])
+    old_values = {str(row["content"]) for row in rows[subject].values()}
+    vector = await profile._load_revision_vector(db, USER)
+    revoked = await revoke_consent(db, USER, "profile_text_extract", "r3-revoke", vector.privacy)
+    await grant_consent(db, USER, "profile_text_extract", AiConsentGrantRequest(
+        consent_version=VERSION, policy_revision=POLICY), "r3-regrant", revoked.privacy_revision)
+    session = await profile.create_master_session(db, USER, ProfileSubject.PERSONAL, VERSION)
+    await db.commit()
+    digest, keys, rows = await journey._continuous_entry_targets(db, USER, ("personal", "ideal_partner"))
+    assert digest is None
+    assert keys == {"personal": frozenset(), "ideal_partner": frozenset()}
+    assert rows == {"personal": {}, "ideal_partner": {}}
+    gateway = _CapturingExtractGateway(InvokeOutcome(result=StructuredExtractResult(
+        schema_version=profile.PROFILE_SCHEMA_VERSION)))
+    monkeypatch.setattr(journey, "AIGateway", lambda **kwargs: gateway)
+    submission = await journey.submit_journey_turn(
+        db, session_id=session.session_id, owner_user_id=USER, client_turn_id="r3-unrelated",
+        answer_text="今天想聊聊通勤情况", flow_version="continuous_v2")
+    await db.commit()
+    started = await _claim_and_start(db, "worker-r3", str(submission.task_id))
+    assert await journey.extract_journey_candidates(db, started, "worker-r3") is not None
+    await db.commit()
+    assert len(gateway.requests) == 1
+    request = gateway.requests[0]
+    assert request.entry_digest is None
+    assert not any(value in str(request.existing_digest or "") for value in old_values)
+
+
+@pytest.mark.asyncio
+async def test_boundary_entry_consecutive_corrections_keep_only_last_revision(
+    real_db_session, real_db_engine, monkeypatch
+):
+    """R6：正式 A→未确认 B→C→refresh→confirm，只让最后明确修订生效。"""
+    from app.services.ai.base import ExtractedPatch, StructuredExtractResult
+    from app.services.ai.gateway import InvokeOutcome
+    from app.services.ai.memory.projections import MemoryProjectionService
+
+    db = real_db_session
+    session, turn = await seed(db)
+    original = "不接受异地相处"
+    await add_candidate(db, session, turn, "personal", "relationship_boundaries", "values", original)
+    await add_candidate(db, session, turn, "ideal_partner", "relationship_boundaries", "values", original)
+    await db.commit()
+    first = await build(db)
+    await generate(db, real_db_engine, monkeypatch)
+    published = await continuous.confirm_continuous_preview(db, first["preview_id"], USER, 0, "r6-publish-a")
+    await db.commit()
+    target_key = (await db.execute(text(
+        "SELECT field_key FROM ai_profile_revision_field WHERE revision_id=:id AND content=:content"
+    ), {"id": published["revision_id"], "content": original})).scalar_one()
+    intermediate, latest = "可以短期异地相处", "可以异地但需要共同规划见面"
+    for index, revised in enumerate((intermediate, latest)):
+        gateway = _CapturingExtractGateway(InvokeOutcome(result=StructuredExtractResult(
+            schema_version=profile.PROFILE_SCHEMA_VERSION,
+            patches=(ExtractedPatch(action="modify", category="values", content=revised,
+                replaces_field_key=target_key, subject=ProfileSubject.PERSONAL,
+                confidence=0.95, assertion_mode="explicit"),))))
+        monkeypatch.setattr(journey, "AIGateway", lambda **kwargs: gateway)
+        submission = await journey.submit_journey_turn(
+            db, session_id=session, owner_user_id=USER, client_turn_id=f"r6-correct-{index}",
+            answer_text=f"把那条底线改为{revised}", flow_version="continuous_v2")
+        await db.commit()
+        started = await _claim_and_start(db, "worker-r6", str(submission.task_id))
+        assert await journey.extract_journey_candidates(db, started, "worker-r6") is not None
+        await db.commit()
+        assert target_key in str(gateway.requests[0].entry_digest)
+    candidates = (await db.execute(text(
+        "SELECT subject,content,status,field_key FROM ai_profile_candidate WHERE user_id=:user "
+        "AND profile_dimension='relationship_boundaries'"
+    ), {"user": USER})).mappings().all()
+    personal = {str(row["content"]): str(row["status"]) for row in candidates if row["subject"] == "personal"}
+    assert personal == {original: "dismissed", intermediate: "dismissed", latest: "active"}
+    assert [row["status"] for row in candidates if row["subject"] == "ideal_partner"] == ["active"]
+    refreshed = await build(db, refresh=True)
+    await generate(db, real_db_engine, monkeypatch)
+    preview = await continuous.get_continuous_preview(db, refreshed["preview_id"], USER)
+    changed = [field for field in preview["fields"] if field["field_key"] == target_key]
+    assert len(changed) == 1 and changed[0]["content"] == latest
+    assert changed[0]["previous_display_value"] == original
+    confirmed = await continuous.confirm_continuous_preview(db, refreshed["preview_id"], USER, 0, "r6-confirm-c")
+    await db.commit()
+    fields = await continuous._revision_fields(db, confirmed["revision_id"])
+    assert [field["content"] for field in fields if field["field_key"] == target_key] == [latest]
+    values = [entry["value"] for entry in await MemoryProjectionService(db)._collect_entries(USER, "personal_profile")]
+    assert latest in values and original not in values and intermediate not in values

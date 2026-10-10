@@ -775,10 +775,10 @@ async def _load_consent_grant(
 ) -> dict[str, Any] | None:
     result = await db.execute(
         text(
-            "SELECT user_id, scope, version, policy_revision, granted_at "
+            "SELECT id AS grant_id, user_id, scope, version, policy_revision, granted_at "
             "FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND version = :version "
-            "AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1"
+            "AND revoked_at IS NULL ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": user_id, "scope": scope, "version": version},
     )
@@ -788,12 +788,12 @@ async def _load_consent_grant(
 def _consent_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     granted_at = row.get("granted_at")
     return {
+        "grant_id": str(row.get("grant_id") or ""),
         "scope": row.get("scope") or PROFILE_CONSENT_SCOPE,
         "version": row.get("version") or "",
         "policy_revision": row.get("policy_revision") or PROFILE_POLICY_REVISION,
         "granted_at": granted_at.isoformat() if granted_at else None,
     }
-
 
 async def _load_revision_vector(db: AsyncSession, user_id: int) -> RevisionVector:
     result = await db.execute(
@@ -3373,7 +3373,7 @@ async def confirm_profile_draft(
 
         consent = await _require_consent(db, owner_user_id)
         if any(draft.consent_snapshot.get(key) != consent.get(key)
-               for key in ("version", "granted_at", "policy_revision")):
+               for key in ("grant_id", "version", "granted_at", "policy_revision")):
             raise AIConsentRequired()
         if any(action.action is ProfileFieldPatchAction.CONFIRM for action in actions):
             raise TaskError(code="PREVIEW_REQUIRED", message="请阅读完整成稿后整份确认", status_code=409)
@@ -4340,10 +4340,10 @@ async def _load_latest_consent(
 ) -> dict[str, Any] | None:
     result = await db.execute(
         text(
-            "SELECT user_id, scope, version, policy_revision, granted_at "
+            "SELECT id AS grant_id, user_id, scope, version, policy_revision, granted_at "
             "FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-            "ORDER BY granted_at DESC LIMIT 1"
+            "ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": user_id, "scope": scope},
     )
@@ -5143,7 +5143,7 @@ async def load_published_narrative(
         consent = await _consent(db, user_id)
         meta = _json(row.get("consent_snapshot_json"), {})
         if (not consent or row.get("draft_status") != "published"
-                or any(meta.get(key) != consent.get(key) for key in ("version", "granted_at", "policy_revision"))):
+                or any(meta.get(key) != consent.get(key) for key in ("grant_id", "version", "granted_at", "policy_revision"))):
             return None
         latest = await _latest_revision(db, user_id, subject)
         if not latest or latest["id"] != row.get("revision_id"):

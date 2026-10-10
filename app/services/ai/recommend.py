@@ -518,10 +518,10 @@ async def viewer_projection_is_current(db: AsyncSession, viewer_id: int) -> bool
 async def _load_active_consent(db: AsyncSession, user_id: int, scope: str) -> dict | None:
     result = await db.execute(
         text(
-            "SELECT user_id, scope, version, policy_revision, granted_at "
+            "SELECT id AS grant_id, user_id, scope, version, policy_revision, granted_at "
             "FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-            "ORDER BY granted_at DESC LIMIT 1"
+            "ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": int(user_id), "scope": scope},
     )

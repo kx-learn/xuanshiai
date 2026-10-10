@@ -630,6 +630,7 @@ def _consent_snapshot(row: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     granted_at = row.get("granted_at")
     return {
+        "grant_id": str(row.get("grant_id") or ""),
         "scope": str(row.get("scope") or SEARCH_CONSENT_SCOPE),
         "version": str(row.get("version") or ""),
         "policy_revision": str(row.get("policy_revision") or SEARCH_POLICY_REVISION),
@@ -642,10 +643,10 @@ async def _load_active_consent(
 ) -> dict[str, Any] | None:
     result = await db.execute(
         text(
-            "SELECT user_id, scope, version, policy_revision, granted_at "
+            "SELECT id AS grant_id, user_id, scope, version, policy_revision, granted_at "
             "FROM ai_consent_grant "
             "WHERE user_id = :user_id AND scope = :scope AND revoked_at IS NULL "
-            "ORDER BY granted_at DESC LIMIT 1"
+            "ORDER BY id DESC LIMIT 1"
         ),
         {"user_id": user_id, "scope": scope},
     )
@@ -2367,19 +2368,20 @@ async def _active_consent_matches(
 ) -> bool:
     scope = str(snapshot.get("scope") or "")
     version = str(snapshot.get("version") or "")
-    if not scope or not version or (expected_scope and scope != expected_scope):
+    grant_id = str(snapshot.get("grant_id") or "")
+    if not scope or not version or not grant_id or (expected_scope and scope != expected_scope):
         return False
     row = await _first_row(
         await db.execute(
             text(
-                "SELECT version, policy_revision, granted_at FROM ai_consent_grant "
+                "SELECT id AS grant_id, version, policy_revision, granted_at FROM ai_consent_grant "
                 "WHERE user_id = :user_id AND scope = :scope AND version = :version "
-                "AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1"
+                "AND revoked_at IS NULL ORDER BY id DESC LIMIT 1"
             ),
             {"user_id": user_id, "scope": scope, "version": version},
         )
     )
-    if row is None:
+    if row is None or str(row.get("grant_id") or "") != grant_id:
         return False
     if str(row.get("policy_revision") or "") != str(snapshot.get("policy_revision") or ""):
         return False
