@@ -2950,26 +2950,6 @@ async def delete_search_snapshot(
 # ----------------------------------------------------------------------
 
 
-def register_search_handlers() -> None:
-    """把 search 相关 handler 与完成期发布器注册进 AI Worker。
-
-    模块导入时自动注册（路由导入本模块即生效）；幂等，可在测试中重复调用。
-    ``search_suggest`` 登记完成期发布器：handler 只暂存，发布由 Worker 在
-    complete_task 提交成功后调用（修复清单 §3.7.2）。
-    """
-    from app.workers import ai_worker as worker_module
-
-    worker_module.TASK_HANDLERS.setdefault(SEARCH_PARSE_TASK_TYPE, parse_search_draft)
-    worker_module.TASK_HANDLERS.setdefault(
-        SEARCH_EXECUTE_TASK_TYPE, search_execute_handler
-    )
-    worker_module.TASK_HANDLERS.setdefault(
-        SEARCH_SUGGEST_TASK_TYPE, search_suggest_handler
-    )
-    worker_module.register_post_complete_publisher(
-        SEARCH_SUGGEST_TASK_TYPE, publish_search_suggest
-    )
-
 # ----------------------------------------------------------------------
 # WP-S3：猜你喜欢 AI 化（search_suggest 任务 + 24h Redis 缓存 + 频控 + 降级）
 # ----------------------------------------------------------------------
@@ -3525,4 +3505,3 @@ async def _mark_suggest_publish_superseded(db: AsyncSession, task_id: str) -> No
 
 # 模块末尾注册：保证上方全部任务类型/handler 符号已定义，避免与
 # ai_worker 的相互导入在半初始化状态下取不到新符号（WP-S3）。
-register_search_handlers()

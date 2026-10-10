@@ -2084,21 +2084,3 @@ async def request_compatibility_llm_refresh(
         expires_at=_now_utc()
         + timedelta(minutes=settings.ai_compatibility_llm_ttl_minutes),
     )
-
-
-def register_compatibility_handlers() -> None:
-    """把 ``compatibility``/``compatibility_llm`` 注册进 AI Worker 的 TASK_HANDLERS。
-
-    模块导入（路由导入本模块）即生效；幂等，可在测试中重复调用。
-    """
-    from app.workers import ai_worker as worker_module
-
-    worker_module.TASK_HANDLERS.setdefault(
-        COMPATIBILITY_TASK_TYPE, compatibility_execute_handler
-    )
-    worker_module.TASK_HANDLERS.setdefault(
-        COMPATIBILITY_LLM_TASK_TYPE, compatibility_llm_execute_handler
-    )
-
-
-register_compatibility_handlers()
