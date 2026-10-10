@@ -613,11 +613,6 @@ async def confirm_continuous_preview(db: AsyncSession, preview_id: str, user_id:
         payload_extra={"published_revision_id": revision.revision_id, "subject": draft.subject, "consent_snapshot": consent})
     await db.execute(text("UPDATE ai_profile_revision SET source_revision_json=:source WHERE id=:id"),
                      {"source": _dump(published.as_dict()), "id": revision.revision_id})
-    # 既有 revision writer 不复制六维；在同事务按字段键补齐，供后续增量覆盖度使用。
-    await db.execute(text(
-        "UPDATE ai_profile_revision_field r JOIN ai_profile_draft_field d ON d.field_key=r.field_key AND d.draft_id=:draft "
-        "SET r.profile_dimension=d.profile_dimension WHERE r.revision_id=:revision"
-    ), {"draft": draft.draft_id, "revision": revision.revision_id})
     summary = _dump(envelope["narrative"])
     await db.execute(text(
         "INSERT INTO ai_profile_summary (draft_id,revision_id,user_id,subject,summary_text,status,content_hash) "

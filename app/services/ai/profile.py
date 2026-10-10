@@ -269,7 +269,7 @@ _DRAFT_COLUMNS = (
     "expires_at, created_at, updated_at"
 )
 _DRAFT_FIELD_COLUMNS = (
-    "draft_id, field_key, subject, field_kind, category, content, "
+    "draft_id, field_key, subject, field_kind, profile_dimension, category, content, "
     "replaces_field_key, value_json, display_value, source_type, "
     "source_turn_ids, source_span, confidence, visibility, consent_scope, schema_version, "
     "prompt_version, content_hash, confirmation_status, created_at, updated_at"
@@ -549,6 +549,8 @@ class ProfileDraftField:
     prompt_version: str | None = None
     content_hash: str | None = None
     confirmation_status: str = "suggested"
+    # continuous_v2 六维沿用已有列；旧草稿/历史回放允许 NULL。
+    profile_dimension: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3091,6 +3093,7 @@ def _draft_field_from_row(row: dict[str, Any]) -> ProfileDraftField:
         field_key=str(row["field_key"]),
         subject=str(row["subject"]),
         field_kind=str(row.get("field_kind") or "structured"),
+        profile_dimension=row.get("profile_dimension"),
         category=row.get("category"),
         content=row.get("content"),
         replaces_field_key=row.get("replaces_field_key"),
@@ -3134,6 +3137,7 @@ def _draft_response_payload(draft: ProfileDraft) -> dict[str, Any]:
                 "field_key": item.field_key,
                 "subject": item.subject,
                 "field_kind": item.field_kind,
+                "profile_dimension": item.profile_dimension,
                 "category": item.category,
                 "content": item.content,
                 "replaces_field_key": item.replaces_field_key,
@@ -3162,6 +3166,11 @@ def _draft_from_response_payload(
         ProfileDraftField(
             field_key=str(item["field_key"]),
             subject=str(item.get("subject") or fallback.subject),
+            field_kind=str(item.get("field_kind") or "structured"),
+            profile_dimension=item.get("profile_dimension"),
+            category=item.get("category"),
+            content=item.get("content"),
+            replaces_field_key=item.get("replaces_field_key"),
             value=item.get("value"),
             display_value=item.get("display_value"),
             source_type=item.get("source_type"),
@@ -3673,11 +3682,11 @@ async def insert_immutable_profile_revision(
         await db.execute(
             text(
                 "INSERT INTO ai_profile_revision_field "
-                "(revision_id, field_key, subject, field_kind, category, content, "
+                "(revision_id, field_key, subject, field_kind, profile_dimension, category, content, "
                 " replaces_field_key, value_json, display_value, confidence, "
                 " source_type, source_turn_ids, source_span, content_hash, schema_version, prompt_version, "
                 " created_at) "
-                "VALUES (:revision_id, :field_key, :subject, :field_kind, :category, :content, "
+                "VALUES (:revision_id, :field_key, :subject, :field_kind, :profile_dimension, :category, :content, "
                 " :replaces_field_key, :value_json, :display_value, "
                 " :confidence, :source_type, :source_turn_ids, :source_span, :content_hash, "
                 " :schema_version, :prompt_version, :created_at)"
@@ -3687,6 +3696,7 @@ async def insert_immutable_profile_revision(
                 "field_key": field.field_key,
                 "subject": subject,
                 "field_kind": field.field_kind,
+                "profile_dimension": field.profile_dimension,
                 "category": field.category,
                 "content": field.content,
                 "replaces_field_key": field.replaces_field_key,

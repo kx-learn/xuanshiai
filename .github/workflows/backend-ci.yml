@@ -143,6 +143,7 @@ jobs:
           app/api/routes/ai_moxiang.py app/services/ai/profile.py
           tests/test_ai_profile_sessions.py tests/test_master_session.py
           tests/test_moxiang_journey_start_contract.py
+          tests/test_ai_profile_field_metadata.py
       - name: Profile session and moxiang journey contracts
         env:
           UPLOAD_DIR: ${{ runner.temp }}/xuanshiai-ai-session-uploads
@@ -152,7 +153,8 @@ jobs:
           tests/test_moxiang_journey_start_contract.py
           tests/test_ai_profile_sessions.py
           tests/test_ai_profile_publish.py
-          tests/test_ai_profile_entries.py -q
+          tests/test_ai_profile_entries.py
+          tests/test_ai_profile_field_metadata.py -q
 
   # continuous_v2 新链路门禁：双画像抽取、成稿替换语义、删除后 Memory 一致性与
   # 预览/确认路由契约。全部为不依赖 DB 的单元契约，但此前没有任何 job 执行——
@@ -176,6 +178,8 @@ jobs:
         run: >-
           uv run --no-sync ruff check
           app/services/ai/candidates.py app/services/ai/continuous.py
+          app/services/ai/search.py app/services/ai/compatibility.py app/services/ai/recommend.py
+          app/services/ai/features.py
           app/services/ai/continuous_memory.py app/services/ai/journey.py
           app/services/ai/prompts/profile_extract.py
           app/services/voice/realtime/context.py
@@ -187,6 +191,8 @@ jobs:
           tests/test_ai_continuous_routes.py tests/test_ai_continuous_docs.py
           tests/test_ai_profile_preview.py
           tests/test_ai_moxiang_candidate_pool.py
+          tests/test_worker_registration.py
+          tests/test_ai_memory_projection_shadow.py tests/test_ai_search_memory_projection.py
       - name: Continuous portrait and preview contracts
         env:
           UPLOAD_DIR: ${{ runner.temp }}/xuanshiai-continuous-uploads
@@ -198,7 +204,11 @@ jobs:
           tests/test_ai_continuous_routes.py
           tests/test_ai_continuous_docs.py
           tests/test_ai_profile_preview.py
-          tests/test_ai_moxiang_candidate_pool.py -q
+          tests/test_ai_moxiang_candidate_pool.py
+          tests/test_worker_registration.py
+          tests/test_worker_finalize_gate.py tests/test_worker_lease_safety.py
+          tests/test_ai_memory_projection_shadow.py tests/test_ai_search_memory_projection.py
+          tests/test_ai_feature_projection.py -q
 
   # 隔离真实库集成：使用本 job 自己创建的 MySQL/Redis service，覆盖 continuous
   # 成稿/确认事务、WS→候选→Worker→预览→确认链路与 Memory/投影。绝不连接开发或

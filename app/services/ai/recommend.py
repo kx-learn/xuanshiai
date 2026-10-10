@@ -827,24 +827,6 @@ async def recommend_rebuild_handler(
     )
 
 
-def register_recommend_handlers() -> None:
-    """把 ``recommend_rebuild`` 注册进 AI Worker 的 TASK_HANDLERS（幂等）。
-
-    权威注册路径是 ``ai_worker.register_business_handlers``（standalone worker
-    唯一可靠入口）；此处为路由/测试导入路径的幂等兜底，容错部分初始化。
-    """
-    from app.workers import ai_worker as worker_module
-
-    handlers = getattr(worker_module, "TASK_HANDLERS", None)
-    if handlers is not None:
-        handlers.setdefault(RECOMMEND_TASK_TYPE, recommend_rebuild_handler)
-    else:
-        logger.warning(
-            "recommend handler registration skipped: ai_worker partially initialized"
-        )
-
-
-register_recommend_handlers()
 
 
 # ----------------------------------------------------------------------

@@ -108,6 +108,19 @@ async def test_frozen_preview_atomic_confirmation_and_replay(real_db_session, re
     other_key = await continuous.confirm_continuous_preview(db, state["preview_id"], USER, 0, "confirm-two")
     await db.commit()
     assert replay["replayed"] and other_key["revision_id"] == result["revision_id"]
+    # The immutable writer must preserve the frozen draft metadata directly.
+    metadata_columns = "field_key, subject, field_kind, profile_dimension, category, content, replaces_field_key"
+    draft_fields = (await db.execute(text(
+        f"SELECT {metadata_columns} FROM ai_profile_draft_field "
+        "WHERE draft_id=:id AND confirmation_status='confirmed' ORDER BY field_key"
+    ), {"id": state["draft_id"]})).mappings().all()
+    revision_fields = (await db.execute(text(
+        f"SELECT {metadata_columns} FROM ai_profile_revision_field "
+        "WHERE revision_id=:id ORDER BY field_key"
+    ), {"id": result["revision_id"]})).mappings().all()
+    assert len(revision_fields) == 3
+    assert [dict(row) for row in revision_fields] == [dict(row) for row in draft_fields]
+    assert all(row["subject"] == subject and row["profile_dimension"] is not None for row in revision_fields)
     narrative = await profile.load_published_narrative(db, USER, subject)
     assert narrative["status"] == "confirmed" and narrative["revision_id"] == result["revision_id"]
     assert continuous._narrative_text(narrative["data"]) == preview["content"]
