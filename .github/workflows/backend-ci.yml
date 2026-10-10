@@ -177,6 +177,7 @@ jobs:
           uv run --no-sync ruff check
           app/services/ai/candidates.py app/services/ai/continuous.py
           app/services/ai/search.py app/services/ai/compatibility.py app/services/ai/recommend.py
+          app/services/ai/features.py
           app/services/ai/continuous_memory.py app/services/ai/journey.py
           app/services/ai/prompts/profile_extract.py
           app/services/voice/realtime/context.py
@@ -189,6 +190,7 @@ jobs:
           tests/test_ai_profile_preview.py
           tests/test_ai_moxiang_candidate_pool.py
           tests/test_worker_registration.py
+          tests/test_ai_memory_projection_shadow.py tests/test_ai_search_memory_projection.py
       - name: Continuous portrait and preview contracts
         env:
           UPLOAD_DIR: ${{ runner.temp }}/xuanshiai-continuous-uploads
@@ -202,7 +204,9 @@ jobs:
           tests/test_ai_profile_preview.py
           tests/test_ai_moxiang_candidate_pool.py
           tests/test_worker_registration.py
-          tests/test_worker_finalize_gate.py tests/test_worker_lease_safety.py -q
+          tests/test_worker_finalize_gate.py tests/test_worker_lease_safety.py
+          tests/test_ai_memory_projection_shadow.py tests/test_ai_search_memory_projection.py
+          tests/test_ai_feature_projection.py -q
 
   # 隔离真实库集成：使用本 job 自己创建的 MySQL/Redis service，覆盖 continuous
   # 成稿/确认事务、WS→候选→Worker→预览→确认链路与 Memory/投影。绝不连接开发或
