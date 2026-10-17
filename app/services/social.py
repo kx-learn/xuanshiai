@@ -55,7 +55,6 @@ from app.services.restrictions import create_restriction
 from app.schemas.restrictions import RestrictionCreate
 from app.services.revisions import RevisionKind, increment_revision_and_enqueue
 
-
 def _social_user(row: dict[str, Any]) -> SocialUser:
     return SocialUser(
         user_id=int(row["user_id"]),
@@ -319,7 +318,7 @@ async def list_messages(
 
 
 async def send_message(
-    db: AsyncSession, user_id: int, session_id: int, request: ChatMessageCreate
+    db: AsyncSession, user_id: int, session_id: int, request: ChatMessageCreate, *, commit: bool = True
 ) -> ChatMessageResponse:
     await ensure_user_allowed(db, user_id, "MESSAGE_RESTRICTED")
     session, target_id = await _session(db, user_id, session_id)
@@ -373,7 +372,8 @@ async def send_message(
         title="收到一条新消息", content=preview, target_type="chat_session",
         target_id=session_id, payload={"message_type": request.type},
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     created = await db.execute(text("""SELECT id, session_id, from_user_id, to_user_id, type,
         content, media_url, client_message_id, is_read, revoked_at, created_at
         FROM chat_message WHERE id = :id"""), {"id": inserted.lastrowid})

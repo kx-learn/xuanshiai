@@ -408,8 +408,8 @@ class MediaUploadResponse(BaseModel):
 
 class CommunityMediaResponse(BaseModel):
     id: int
-    purpose: Literal["post", "paper_plane"]
-    media_type: Literal["image", "video"]
+    purpose: Literal["post", "paper_plane", "chat"]
+    media_type: Literal["image", "voice", "video"]
     url: str
     thumbnail_url: str | None = None
     file_size: int | None = None

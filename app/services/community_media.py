@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.schemas.community import CommunityMediaResponse
+from app.services.media import AUDIO_EXTENSIONS, AUDIO_MAX_BYTES, ALLOWED_AUDIO_TYPES
 
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 VIDEO_MAX_BYTES = 50 * 1024 * 1024
@@ -29,7 +30,7 @@ VIDEO_MAX_SECONDS = 30
 IMAGE_MAX_PIXELS = 25_000_000
 UNBOUND_TTL_HOURS = 24
 MODERATION_RETENTION_DAYS = 365
-ALLOWED_PURPOSES = {"post", "paper_plane"}
+ALLOWED_PURPOSES = {"post", "paper_plane", "chat"}
 
 
 def _media_url(user_id: int, filename: str) -> str:
@@ -151,17 +152,60 @@ async def upload_community_media(
 ) -> CommunityMediaResponse:
     purpose_norm = (purpose or "").strip()
     if purpose_norm not in ALLOWED_PURPOSES:
-        raise HTTPException(422, detail="purpose 仅支持 post 或 paper_plane")
+        raise HTTPException(422, detail="purpose 仅支持 post、paper_plane 或 chat")
 
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     name = file.filename or ""
     looks_video = content_type.startswith("video/") or name.lower().endswith(".mp4")
+    looks_audio = content_type.startswith("audio/") or name.lower().endswith(
+        (".mp3", ".aac", ".wav", ".m4a", ".webm", ".ogg")
+    )
     if purpose_norm == "paper_plane" and looks_video:
         raise HTTPException(422, detail="纸飞机不支持视频")
+    if looks_audio and purpose_norm != "chat":
+        raise HTTPException(422, detail="仅聊天媒体支持语音")
 
     directory = _dir(user_id)
     expire_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=UNBOUND_TTL_HOURS)
     moderation_status = "approved" if settings.environment in {"development", "testing"} else "pending"
+
+    if looks_audio:
+        if content_type not in ALLOWED_AUDIO_TYPES:
+            raise HTTPException(415, detail="仅支持 mp3/aac/wav/m4a/webm/ogg 语音")
+        data = await _read_limited(file, AUDIO_MAX_BYTES)
+        extension = AUDIO_EXTENSIONS.get(content_type, ".bin")
+        final_path = directory / f"{uuid.uuid4().hex}{extension}"
+        async with aiofiles.open(final_path, "wb") as output:
+            await output.write(data)
+        url = _media_url(user_id, final_path.name)
+        result = await db.execute(
+            text(
+                """INSERT INTO community_media
+                (user_id, purpose, media_type, file_url, storage_key, thumbnail_url,
+                 mime_type, file_size, duration_seconds, status, moderation_status, expire_at)
+                VALUES
+                (:user_id, :purpose, 'voice', :url, :storage_key, NULL,
+                 :mime_type, :file_size, NULL, 'ready', :moderation_status, :expire_at)"""
+            ),
+            {
+                "user_id": user_id,
+                "purpose": purpose_norm,
+                "url": url,
+                "storage_key": str(final_path),
+                "mime_type": content_type,
+                "file_size": len(data),
+                "moderation_status": moderation_status,
+                "expire_at": expire_at,
+            },
+        )
+        if moderation_status == "pending":
+            await _record_media_moderation_task(db, user_id, int(result.lastrowid), url)
+        await db.commit()
+        row = await db.execute(
+            text("SELECT * FROM community_media WHERE id = :id"),
+            {"id": result.lastrowid},
+        )
+        return _row_response(row.mappings().one())
 
     if looks_video:
         temp_path = directory / f"video-{uuid.uuid4().hex}.upload"

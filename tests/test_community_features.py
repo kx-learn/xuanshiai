@@ -1591,8 +1591,10 @@ async def test_paper_plane_rollback_failure_preserves_database_error_and_attempt
 
 
 @pytest.mark.asyncio
-async def test_application_rollback_failure_preserves_database_error_and_attempts_refund(
+@pytest.mark.parametrize("daily_quota_consumed", [True, False], ids=["consumed", "not-consumed"])
+async def test_application_rollback_failure_preserves_database_error_and_refunds_only_consumed_quota(
     monkeypatch: pytest.MonkeyPatch,
+    daily_quota_consumed: bool,
 ) -> None:
     database_error = RuntimeError("application insert failed")
     refund_calls: list[str] = []
@@ -1606,6 +1608,9 @@ async def test_application_rollback_failure_preserves_database_error_and_attempt
     async def not_vip(*_args: object, **_kwargs: object) -> bool:
         return False
 
+    async def consume_quota(*_args: object, **_kwargs: object) -> bool:
+        return daily_quota_consumed
+
     async def refund(key: str) -> None:
         refund_calls.append(key)
 
@@ -1613,20 +1618,25 @@ async def test_application_rollback_failure_preserves_database_error_and_attempt
     monkeypatch.setattr(discovery_service, "_ensure_target", no_op)
     monkeypatch.setattr(discovery_service, "_expire_pending_applications", no_op)
     monkeypatch.setattr(discovery_service, "_viewer_context", viewer)
-    monkeypatch.setattr(discovery_service, "_consume_apply_quota", no_op)
+    monkeypatch.setattr(discovery_service, "_consume_apply_quota", consume_quota)
+    monkeypatch.setattr(discovery_service, "_record_quota_usage", no_op)
     monkeypatch.setattr(discovery_service, "_is_vip", not_vip)
     monkeypatch.setattr(discovery_service, "refund_daily", refund)
 
-    with pytest.raises(RuntimeError, match="application insert failed"):
+    db = RollbackFailingSession(None, database_error)
+    with pytest.raises(RuntimeError, match="application insert failed") as raised:
         await discovery_service.create_application(
-            RollbackFailingSession(None, database_error),
+            db,
             7,
             8,
             ApplicationCreateRequest(message="hello"),
         )
 
-    assert len(refund_calls) == 1
-    assert refund_calls[0].startswith("discovery:apply:7:")
+    assert raised.value is database_error
+    assert db.rollbacks == 1
+    assert len(refund_calls) == int(daily_quota_consumed)
+    if daily_quota_consumed:
+        assert refund_calls[0].startswith("discovery:apply:7:")
 
 
 @pytest.mark.asyncio
