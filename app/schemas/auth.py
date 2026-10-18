@@ -239,6 +239,7 @@ class ProfileUpdateRequest(BaseModel):
 
 
 class NicknameUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     nickname: str = Field(min_length=1, max_length=64, description="用户昵称，去除首尾空格后不能为空")
 
     @field_validator("nickname", mode="before")

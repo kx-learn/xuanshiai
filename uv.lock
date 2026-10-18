@@ -1394,6 +1394,12 @@ wheels = [
 ]
 
 [[package]]
+name = "tls-sig-api-v2"
+version = "1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/a1/18028516d9e31d50c11b96323586b57906b08dddf0ec4a3fc3e2293531ac/tls-sig-api-v2-1.1.tar.gz", hash = "sha256:5b153a4e739d2fd0c931daf371292c97472f59b4308f3220a85950c3c90f4377", size = 2328, upload-time = "2019-06-20T07:17:33.962Z" }
+
+[[package]]
 name = "tqdm"
 version = "4.70.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1721,6 +1727,7 @@ dependencies = [
     { name = "redis" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tencentcloud-sdk-python" },
+    { name = "tls-sig-api-v2" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1755,6 +1762,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8,<1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3.0" },
     { name = "tencentcloud-sdk-python", specifier = ">=3.0.1200,<4.0" },
+    { name = "tls-sig-api-v2", specifier = ">=1.1,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1.0" },
 ]
 provides-extras = ["dev"]
