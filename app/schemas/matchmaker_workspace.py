@@ -38,6 +38,73 @@ class MatchmakerWorkspaceProfileUpdate(BaseModel):
     display_name: str = Field(min_length=1, max_length=64)
 
 
+class MatchmakerHomepageCase(BaseModel):
+    description: str = Field(min_length=1, max_length=1000)
+    images: list[str] = Field(default_factory=list, max_length=3)
+
+
+class MatchmakerHomepage(BaseModel):
+    """红娘本人可见的主页编辑资料；字段与公开主页同源，落库在入驻申请表。"""
+
+    user_id: int
+    nickname: str
+    avatar: str | None
+    slogan: str | None
+    specialties: list[str]
+    introduction: str
+    success_cases: list[MatchmakerHomepageCase]
+
+
+class MatchmakerHomepageUpdate(BaseModel):
+    nickname: str | None = Field(default=None, min_length=1, max_length=64)
+    slogan: str | None = Field(default=None, max_length=64)
+    specialties: list[str] | None = Field(default=None, max_length=5)
+    introduction: str | None = Field(default=None, min_length=10, max_length=2000)
+    success_cases: list[MatchmakerHomepageCase] | None = Field(default=None, max_length=3)
+
+    @field_validator("nickname", "introduction")
+    @classmethod
+    def normalize_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("内容不能为空")
+        return cleaned
+
+    @field_validator("slogan")
+    @classmethod
+    def normalize_slogan(cls, value: str | None) -> str | None:
+        # 空串表示清空签名，与「未填」在主页上是同一种展示。
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
+    @field_validator("specialties")
+    @classmethod
+    def validate_specialties(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip() for item in value if item.strip()]
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("擅长领域不能重复")
+        return cleaned
+
+    @field_validator("success_cases")
+    @classmethod
+    def validate_success_cases(
+        cls, value: list[MatchmakerHomepageCase] | None
+    ) -> list[MatchmakerHomepageCase] | None:
+        if value is None:
+            return None
+        return [
+            case.model_copy(
+                update={"description": case.description.strip(), "images": [image.strip() for image in case.images if image.strip()]}
+            )
+            for case in value
+        ]
+
+
 class WorkspaceMetric(BaseModel):
     key: str
     label: str
@@ -68,11 +135,15 @@ def _strip_contact(value: str | None) -> str | None:
 
 class WorkspaceLeadCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    phone: str | None = Field(default=None, max_length=32)
+    real_name: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, pattern=r"^1[3-9]\d{9}$")
     wechat: str | None = Field(default=None, max_length=128)
     source: str = Field(min_length=1, max_length=64)
     intention_level: Literal[1, 2, 3] = 1
     remark: str | None = Field(default=None, max_length=2000)
+    photo: str | None = Field(default=None, max_length=512)
+    gender: Literal[1, 2] | None = None
+    birthday: date | None = None
 
     @field_validator("phone", "wechat", mode="before")
     @classmethod
@@ -82,20 +153,25 @@ class WorkspaceLeadCreate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def require_contact(self) -> "WorkspaceLeadCreate":
-        if not self.phone and not self.wechat:
-            raise ValueError("phone 或 wechat 至少提供一个")
+    def require_phone(self) -> "WorkspaceLeadCreate":
+        # 业务口径：线索必须能联系到人，且只有手机号能一键入库成会员（微信号只是文本备注）。
+        if not self.phone:
+            raise ValueError("必须登记 11 位手机号")
         return self
 
 
 class WorkspaceLeadUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    phone: str | None = Field(default=None, max_length=32)
+    real_name: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, pattern=r"^1[3-9]\d{9}$")
     wechat: str | None = Field(default=None, max_length=128)
     intention_level: Literal[1, 2, 3] | None = None
     status: LeadStatus | None = None
     remark: str | None = Field(default=None, max_length=2000)
     next_follow_at: datetime | None = None
+    photo: str | None = Field(default=None, max_length=512)
+    gender: Literal[1, 2] | None = None
+    birthday: date | None = None
 
     @field_validator("phone", "wechat", mode="before")
     @classmethod
@@ -106,6 +182,9 @@ class WorkspaceLeadUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_update(self) -> "WorkspaceLeadUpdate":
+        # 显式传 phone=null/"" 会被归一化成 None：那等于把线索改成联系不上人的死数据。
+        if "phone" in self.model_fields_set and not self.phone:
+            raise ValueError("手机号不能清空，只能改成有效的 11 位手机号")
         if not self.model_fields_set:
             raise ValueError("至少提供一个需要修改的字段")
         return self
@@ -114,6 +193,7 @@ class WorkspaceLeadUpdate(BaseModel):
 class WorkspaceLead(BaseModel):
     id: int
     name: str
+    real_name: str | None = None
     phone: str | None
     wechat: str | None
     source: str
@@ -127,6 +207,9 @@ class WorkspaceLead(BaseModel):
     remark: str | None = None
     last_follow_up_at: datetime | None = None
     converted_user_id: int | None = None
+    photo: str | None = None
+    gender: int | None = None
+    birthday: date | None = None
 
 
 class WorkspaceLeadPage(BaseModel):
@@ -277,8 +360,18 @@ class WorkspaceMemberFollowUpPage(BaseModel):
 
 
 class WorkspaceMemberContact(BaseModel):
+    """服务红娘受审计读取的会员联系方式。
+
+    ``scope`` 说明本次读取依据的权限范围：``ALL`` 表示超级红娘可查看所有会员，
+    ``SERVED`` 表示普通红娘仅能查看自己服务范围内的会员。
+    """
+
     user_id: int
-    phone: str | None
+    nickname: str | None = None
+    real_name: str | None = None
+    phone: str | None = None
+    wechat: str | None = None
+    scope: Literal["ALL", "SERVED"] = "SERVED"
 
 
 class WorkspaceMatchCandidate(BaseModel):
@@ -312,13 +405,15 @@ class WorkspaceMatchCandidatePage(BaseModel):
 
 
 class WorkspaceMatchHistoryItem(BaseModel):
+    """会员的一条牵线记录（matchmaker_introduction），对方视角。"""
+
     id: int
     counterpart_user_id: int
     counterpart_nickname: str
-    status: Literal[0, 1, 2, 3]
+    status: IntroductionStatus
     direction: Literal["OUTGOING", "INCOMING"]
     created_at: datetime
-    responded_at: datetime | None
+    updated_at: datetime
 
 
 class WorkspaceMatchHistoryPage(BaseModel):
@@ -334,6 +429,7 @@ class WorkspaceIntroductionPerson(BaseModel):
     nickname: str
     avatar: str | None
     gender: Literal[1, 2] | None
+    is_vip: bool = False
 
 
 class WorkspaceIntroduction(BaseModel):
@@ -445,7 +541,7 @@ class PartnerCenterSnapshot(BaseModel):
 
 class PromoterLeadCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    phone: str | None = Field(default=None, max_length=32)
+    phone: str | None = Field(default=None, pattern=r"^1[3-9]\d{9}$")
     wechat: str | None = Field(default=None, max_length=128)
     source: str = Field(min_length=1, max_length=64)
     remark: str | None = Field(default=None, max_length=2000)
@@ -458,9 +554,10 @@ class PromoterLeadCreate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def require_contact(self) -> "PromoterLeadCreate":
-        if not self.phone and not self.wechat:
-            raise ValueError("phone 或 wechat 至少提供一个")
+    def require_phone(self) -> "PromoterLeadCreate":
+        # 业务口径同录入线索：必须能联系到人，且只有手机号能一键入库成会员。
+        if not self.phone:
+            raise ValueError("必须登记 11 位手机号")
         return self
 
 
@@ -532,10 +629,11 @@ class WorkspaceMemberEntryCreate(BaseModel):
     real_name: str | None = Field(default=None, max_length=64)
     gender: Literal[1, 2]
     birthday: date | None = None
+    # 与会员端资料编辑页同一套婚况档位（1 未婚 / 2 离异 / 3 丧偶）；库里 4~7 属历史值，只读不再写入。
     is_married: Literal[1, 2, 3] | None = None
     wechat: str | None = Field(default=None, max_length=128)
     height: int | None = Field(default=None, ge=100, le=250)
-    weight: int | None = Field(default=None, ge=40, le=120)
+    weight: int | None = Field(default=None, ge=30, le=150)
     hometown: str | None = Field(default=None, max_length=64)
     residence: str | None = Field(default=None, max_length=64)
     household: str | None = Field(default=None, max_length=64)
@@ -552,6 +650,26 @@ class WorkspaceMemberEntryCreate(BaseModel):
     marriage_plan: str | None = Field(default=None, max_length=64)
     tags: str | None = Field(default=None, max_length=128)
     remark: str | None = Field(default=None, max_length=2000)
+    # 择偶要求（录入时一并写入 user_partner_preference）
+    age_min: int | None = Field(default=None, ge=18, le=100)
+    age_max: int | None = Field(default=None, ge=18, le=100)
+    height_min: int | None = Field(default=None, ge=100, le=250)
+    height_max: int | None = Field(default=None, ge=100, le=250)
+    education_min: int | None = Field(default=None, ge=1, le=8)
+    income_min: float | None = Field(default=None, ge=0, le=1_000_000)
+    occupation_requirement: str | None = Field(default=None, max_length=64)
+    marriage_accept: Literal["不接受离异", "可接受离异未育", "接受离异带娃", "视情况而定"] | None = None
+    housing_requirement: Literal[0, 1, 2] | None = None
+    smoking_requirement: Literal[0, 1, 2] | None = None
+    wedding_plan: Literal["不限", "计划一年内", "计划两年内", "计划三年内", "时机成熟时结婚", "不婚"] | None = None
+
+    @model_validator(mode="after")
+    def validate_pref_ranges(self) -> "WorkspaceMemberEntryCreate":
+        if self.age_min is not None and self.age_max is not None and self.age_min > self.age_max:
+            raise ValueError("期望年龄下限不能大于上限")
+        if self.height_min is not None and self.height_max is not None and self.height_min > self.height_max:
+            raise ValueError("期望身高下限不能大于上限")
+        return self
 
 
 class WorkspaceMemberEntryResult(BaseModel):

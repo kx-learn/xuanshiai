@@ -18,14 +18,20 @@ from app.services.sensitive_operations import (
 )
 from app.schemas.matchmaker_crm_admin import MatchRecordCreate, MatchRecordItem, MatchRecordPage, MatchRecordResponse, MatchRecordStatistics, MatchRecordUpdate, MemberAssignmentResponse, MemberAssignmentUpdate, MemberDetail, MemberListItem, MemberPage, MemberStatistics, MemberStatusResponse, MemberStatusUpdate, MemberWechatBindRequest, SourceDistributionItem
 from app.schemas.admin import CertificationReviewRequest, RealnameReviewRequest
+from app.schemas.auth import PreferenceResponse, PreferenceUpdateRequest
 from app.services.auth import list_realname_reviews, review_realname
 from app.services.certifications import list_certification_reviews, review_certification
+from app.services.matchmaker_member_profile import (
+    get_member_preferences,
+    update_member_preferences,
+)
 from app.services.member_crm_filter import (
     MEMBER_BALANCE_EXPR,
     MEMBER_POINTS_EXPR,
     build_member_filter,
     member_sort_sql,
 )
+from app.services.matchmaker_workspace import sync_admin_match_record_introduction
 
 router = APIRouter(prefix="/admin/matchmaker")
 
@@ -221,6 +227,14 @@ async def update_match_record(
         (actor_user_id, action, resource_type, resource_id, reason)
         VALUES (:actor, 'match_record.status', 'match_apply', :id, :reason)"""),
         {"actor": current.account.id, "id": record_id, "reason": body.reason})
+    await sync_admin_match_record_introduction(
+        db,
+        record_id,
+        int(row["from_user_id"]),
+        int(row["to_user_id"]),
+        body.status,
+        failure_reason=body.reason,
+    )
     await db.commit()
     updated = (await db.execute(text(f"""SELECT a.id, a.from_user_id, a.to_user_id, a.status, a.created_at, a.responded_at,
         fu.nickname AS from_nickname, tu.nickname AS to_nickname, ra.matchmaker_id
@@ -250,12 +264,21 @@ async def create_match_record(
         VALUES (:from_id, :to_id, '后台添加牵线记录', :status, :responded_at, NULL, :created_at, UTC_TIMESTAMP())"""), {
         **ids, "status": body.line_status, "created_at": body.create_time, "responded_at": body.complete_time,
     })
+    record_id = int(result.lastrowid)
     if body.line_status == 1:
         await db.execute(text("""INSERT INTO user_match (user_id, target_user_id, status)
             VALUES (:left, :right, 1), (:right, :left, 1)
             ON DUPLICATE KEY UPDATE status = 1, updated_at = UTC_TIMESTAMP()"""), {"left": body.from_love_user_id, "right": body.to_love_user_id})
+    await sync_admin_match_record_introduction(
+        db,
+        record_id,
+        body.from_love_user_id,
+        body.to_love_user_id,
+        body.line_status,
+        created_at=body.create_time,
+    )
     await db.commit()
-    return MatchRecordResponse(id=int(result.lastrowid), from_user_id=body.from_love_user_id, to_user_id=body.to_love_user_id, status=body.line_status, created_at=body.create_time, responded_at=body.complete_time)
+    return MatchRecordResponse(id=record_id, from_user_id=body.from_love_user_id, to_user_id=body.to_love_user_id, status=body.line_status, created_at=body.create_time, responded_at=body.complete_time)
 
 
 def _normalize_tags(raw: object) -> object:
@@ -1021,6 +1044,16 @@ async def member_detail(member_id: int = Path(..., ge=1), current: CurrentMatchm
     # 脱敏口径集中在一处，elevated 档也仅保留首尾若干位。
     data["wechat"] = mask_contact(data.get("wechat"), redaction_level_from_permissions(current.permissions))
     return MemberDetail(**data)
+
+
+@router.get("/members/{member_id}/preferences", response_model=PreferenceResponse, summary="查询会员择偶要求")
+async def member_preferences(member_id: int = Path(..., ge=1), current: CurrentMatchmakerAdmin = Depends(get_current_matchmaker_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    return await get_member_preferences(db, member_id)
+
+
+@router.patch("/members/{member_id}/preferences", response_model=PreferenceResponse, summary="修改会员择偶要求")
+async def update_member_preferences_route(member_id: int = Path(..., ge=1), current: CurrentMatchmakerAdmin = Depends(get_current_matchmaker_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    return await update_member_preferences(db, member_id, body)
 
 
 class MemberContactReveal(BaseModel):

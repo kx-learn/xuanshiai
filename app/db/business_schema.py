@@ -100,9 +100,13 @@ BUSINESS_TABLES = {
         CREATE TABLE IF NOT EXISTS `customer_lead` (
             `id` bigint unsigned NOT NULL AUTO_INCREMENT,
             `name` varchar(128) NOT NULL,
+            `real_name` varchar(64) DEFAULT NULL COMMENT '客源真实姓名（选填）',
             `phone` varchar(32) DEFAULT NULL,
             `wechat` varchar(128) DEFAULT NULL,
             `source` varchar(64) NOT NULL,
+            `photo` varchar(512) DEFAULT NULL COMMENT '客源照片URL',
+            `gender` tinyint DEFAULT NULL COMMENT '1男 2女 NULL未知',
+            `birthday` date DEFAULT NULL,
             `intention_level` tinyint NOT NULL DEFAULT '1' COMMENT '1低 2中 3高',
             `gender` tinyint NOT NULL DEFAULT 0 COMMENT '性别 0未知 1男 2女（A13）',
             `status` varchar(32) NOT NULL DEFAULT 'NEW' COMMENT 'NEW/CONTACTED/INTENDED/CONVERTED/LOST/CLOSED',

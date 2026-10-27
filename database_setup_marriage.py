@@ -125,6 +125,25 @@ def get_logger(name):
 logger = get_logger(__name__)
 
 
+def _column_collation(column: object) -> str:
+    """读取 SHOW FULL COLUMNS 行里的 Collation。
+
+    初始化脚本使用 DictCursor，行是 dict；但 pymysql 的 DictCursor 会**丢弃
+    重复列名**，而 SHOW FULL COLUMNS 同时含 `Field` 和 `Type`（恰好都是 'Type'
+    时会冲突），因此按名字取可能取不到。这里同时兼容 dict 与 tuple 两种游标。
+    """
+    if isinstance(column, dict):
+        for key in ("Collation", "collation"):
+            if key in column:
+                value = column[key]
+                return "" if value is None else str(value)
+        return ""
+    if isinstance(column, (list, tuple)) and len(column) > 2:
+        value = column[2]
+        return "" if value is None else str(value)
+    return ""
+
+
 class DatabaseManager:
     def __init__(self):
         self._ensure_database_exists()
@@ -1356,6 +1375,9 @@ class DatabaseManager:
                     `housing_requirement` tinyint DEFAULT NULL COMMENT '0不限 1有房 2无房',
                     `smoking_requirement` tinyint DEFAULT NULL COMMENT '0不限 1不抽烟 2可接受',
                     `drinking_requirement` tinyint DEFAULT NULL COMMENT '0不限 1不饮酒 2可接受',
+                    `occupation_requirement` varchar(64) DEFAULT NULL COMMENT '期望职业：不限/具体职业',
+                    `marriage_accept` varchar(32) DEFAULT NULL COMMENT '婚况接受度：不接受离异/可接受离异未育/接受离异带娃/视情况而定',
+                    `wedding_plan` varchar(32) DEFAULT NULL COMMENT '结婚计划：不限/计划一年内/计划两年内/计划三年内/时机成熟时结婚/不婚',
                     `dating_goal` varchar(32) DEFAULT NULL COMMENT '交友目标：倾向恋爱/倾向结婚',
                     `meeting_pace` varchar(64) DEFAULT NULL COMMENT '见面节奏',
                     `children_intention` varchar(64) DEFAULT NULL COMMENT '生育意愿',
@@ -3512,7 +3534,7 @@ class DatabaseManager:
                 "varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL "
                 "COMMENT '客户端消息幂等键' AFTER `media_url`"
             )
-        elif column["Collation"] != "utf8mb4_bin":
+        elif _column_collation(column) != "utf8mb4_bin":
             cursor.execute(
                 "ALTER TABLE `chat_message` MODIFY COLUMN `client_message_id` "
                 "varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL "

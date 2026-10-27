@@ -13,10 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.sensitive_fields import REDACTION_LEVEL_STANDARD, is_masked_value, mask_contact
+from app.core.security import lead_convert_password_fields
 # 复用登录注册链路的默认角色发放实现，避免入库账号缺少默认 user_role。
 from app.services.auth import ensure_default_user_role
 
 from app.schemas.customer_lead_admin import (
+    CustomerLead, CustomerLeadAbandonment, CustomerLeadAssignment, CustomerLeadConvertRequest, CustomerLeadConvertResult,
+    CustomerLeadCreate, CustomerLeadFollowUp,
+    CustomerLeadBatchImportResult, CustomerLeadFollowUpCreate, CustomerLeadImportRow, CustomerLeadImportSummary,
     CustomerLead, CustomerLeadAbandonment, CustomerLeadAssignment, CustomerLeadCreate, CustomerLeadFollowUp,
     CustomerLeadBatchImportResult, CustomerLeadConvertRequest, CustomerLeadFollowUpCreate, CustomerLeadImportRow, CustomerLeadImportSummary,
     CustomerLeadOption, CustomerLeadOptions,
@@ -28,7 +32,7 @@ from app.services.customer_lead_contact import (
     ensure_contact_available, normalize_contact, raise_duplicate_contact,
 )
 
-LEAD_SELECT = """SELECT id, name, phone, wechat, source, intention_level, status, audit_status, matchmaker_id,
+LEAD_SELECT = """SELECT id, name, real_name, phone, wechat, source, photo, birthday, intention_level, status, audit_status, matchmaker_id,
     organization_id, promoter_id, next_follow_at, converted_user_id, remark, created_by, created_at, updated_at,
     (SELECT GROUP_CONCAT(t.name ORDER BY t.id SEPARATOR ',')
         FROM customer_lead_tag_relation r JOIN customer_lead_tag t ON t.id = r.tag_id
@@ -53,6 +57,7 @@ def _apply_gender_column(select_sql: str) -> str:
 _TEMPLATE_HEADERS: list[str] = ["姓名", "手机号", "微信号", "来源", "意向程度", "备注"]
 _TEMPLATE_SAMPLE: list[str] = ["示例：张女士", "13800000000", "zhang_wx", "抖音", "中", "示例行，导入前请删除"]
 _INTENTION_ALIASES: dict[str, int] = {"低": 1, "中": 2, "高": 3, "1": 1, "2": 2, "3": 3}
+_PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
 
 
 def _lead(row: Any, redaction_level: str = REDACTION_LEVEL_STANDARD) -> CustomerLead:
@@ -60,11 +65,14 @@ def _lead(row: Any, redaction_level: str = REDACTION_LEVEL_STANDARD) -> Customer
 
     `wechat` 按敏感等级掩码后返回（审计第 1 项：完整微信号不得返回）；默认标准级，
     调用方忘记传等级时落到最严格一档，不会泄露完整值。
+    `gender` 历史行有 NULL（A13 加列前的数据），CustomerLead 是 Literal[0,1,2]
+    不接受 None，这里归一为 0（未知），否则整行序列化 500。
     """
     payload = dict(row)
     raw = payload.pop("tags_raw", None)
     payload["tags"] = [item for item in (raw or "").split(",") if item]
     payload["wechat"] = mask_contact(payload.get("wechat"), redaction_level)
+    payload["gender"] = payload.get("gender") or 0
     return CustomerLead(**payload)
 
 
@@ -111,13 +119,16 @@ async def create_lead(db: AsyncSession, account_id: int, request: CustomerLeadCr
     await _ensure_user_in_scope(db, request.promoter_id, assignment_scope, assignment_scope_params)
     await ensure_contact_available(db, phone, wechat)
     try:
-        insert_columns = ["name", "phone", "wechat", "source", "intention_level", "remark", "promoter_id", "audit_status", "created_by"]
+        insert_columns = ["name", "real_name", "phone", "wechat", "source", "intention_level", "remark", "promoter_id", "audit_status", "created_by"]
         insert_payload = {**request.model_dump(exclude={"tags"}), "phone": phone, "wechat": wechat, "created_by": account_id}
-        if "gender" in await _lead_columns(db):
-            insert_columns.append("gender")
+        columns = await _lead_columns(db)
+        # photo/birthday/gender 列可能还没迁移，先发版后迁移时从写入列里剔除，避免 Unknown column 500。
+        insert_columns += [column for column in ("photo", "birthday", "gender") if column in columns]
+        # 每个占位符都要带冒号：`(:{', '.join(cols)})` 只会给第一列生成绑定参数，
+        # 其余列名会被当成列引用，MySQL 按列默认值插入 —— 静默丢掉操作员填的值。
         insert_sql = f"""INSERT INTO customer_lead
             ({', '.join(insert_columns)})
-            VALUES (:{', '.join(insert_columns)})"""
+            VALUES ({', '.join(f':{column}' for column in insert_columns)})"""
         result = await db.execute(text(insert_sql), insert_payload)
         lead_id = int(result.lastrowid)
         await _sync_tags(db, lead_id, request.tags)
@@ -194,16 +205,21 @@ async def convert_lead(
     phone = normalize_contact(await _raw_contact(db, lead_id, "phone"))
     if not phone:
         raise HTTPException(409, detail="线索未登记手机号，无法生成账号，请先补充电话")
+    # 历史线索里还有微信-only/占位号码；入库会直接拿手机号建会员账号，必须当场拦住而不是留下登不进来的号。
+    if not _PHONE_PATTERN.fullmatch(phone):
+        raise HTTPException(422, detail=f"手机号「{phone}」不是有效的 11 位号码，请先修正线索电话后再入库")
+    # users.phone 唯一，撞号时先给出可读提示，而不是让整条入库挂在数据库异常上。
     existing = await db.execute(text("SELECT id FROM users WHERE phone = :phone LIMIT 1"), {"phone": phone})
     if existing.scalar():
-        raise HTTPException(409, detail="该手机号已注册会员，不能重复入库")
+        raise HTTPException(409, detail=f"手机号 {phone} 已是会员（ID {int(existing.scalar())}），请到会员CRM维护，不要重复入库")
     target_organization_id = lead.organization_id or organization_id
     target_matchmaker_id = lead.matchmaker_id or matchmaker_user_id
     try:
         result = await db.execute(text("""INSERT INTO users
-            (openid, phone, phone_verified_at, nickname, gender, status, data_complete_rate, register_ip)
-            VALUES (:openid, :phone, UTC_TIMESTAMP(), :nickname, :gender, 1, 0, '127.0.0.1')"""), {
+            (openid, phone, password, password_algo, phone_verified_at, nickname, gender, status, data_complete_rate, register_ip)
+            VALUES (:openid, :phone, :password, :password_algo, UTC_TIMESTAMP(), :nickname, :gender, 1, 0, '127.0.0.1')"""), {
             "openid": f"lead-convert-{lead_id}", "phone": phone, "nickname": lead.name, "gender": request.gender,
+            **lead_convert_password_fields(),
         })
         user_id = int(result.lastrowid)
         await ensure_default_user_role(db, user_id)
@@ -807,10 +823,11 @@ async def restore_lead(
     if not active:
         raise HTTPException(409, detail="该客源不在弃海池")
     # 恢复后线索回到有效状态，先确认联系方式没有被其它有效线索占用。
+    # get_lead 返回的 wechat 已按敏感等级脱敏，比对必须用库里的原值。
     await ensure_contact_available(
         db,
         normalize_contact(current.phone),
-        normalize_contact(current.wechat),
+        normalize_contact(await _raw_contact(db, lead_id, "wechat")),
         exclude_lead_id=lead_id,
         detail="该客源的联系方式已被其他有效线索占用，无法恢复",
     )
@@ -948,20 +965,27 @@ async def _insert_leads(
     await _ensure_user_in_scope(db, default_promoter_id, assignment_scope, assignment_scope_params)
     tag_names = [name.strip() for name in (default_tags or []) if name and name.strip()]
     for index, row in enumerate(rows, start=start_index):  # Excel 数据从第 2 行起
-        if not row.phone and not row.wechat:
+        # 业务口径：线索必须有有效手机号，否则联系不上人、也无法一键入库成会员。
+        phone = normalize_contact(row.phone)
+        if not phone:
             failed += 1
-            errors.append(f"第 {index} 行：phone 或 wechat 至少提供一个")
+            errors.append(f"第 {index} 行：缺少手机号")
             continue
+        if not _PHONE_PATTERN.fullmatch(phone):
+            failed += 1
+            errors.append(f"第 {index} 行：手机号「{phone}」不是有效的 11 位号码")
+            continue
+        wechat = normalize_contact(row.wechat)
         try:
             if dup_mode == "skip":
                 contact_conditions: list[str] = []
                 dup_params: dict[str, Any] = {}
-                if row.phone:
+                if phone:
                     contact_conditions.append("phone = :phone")
-                    dup_params["phone"] = row.phone
-                if row.wechat:
+                    dup_params["phone"] = phone
+                if wechat:
                     contact_conditions.append("wechat = :wechat")
-                    dup_params["wechat"] = row.wechat
+                    dup_params["wechat"] = wechat
                 duplicate = await db.execute(
                     text("SELECT id FROM customer_lead WHERE status NOT IN ('LOST', 'CLOSED') AND ("
                          + " OR ".join(contact_conditions) + ") LIMIT 1"),
@@ -976,7 +1000,7 @@ async def _insert_leads(
                 VALUES (:name, :phone, :wechat, :source, :intention_level, :remark,
                  :matchmaker_id, :promoter_id, :audit_status, :created_by)"""),
                 {
-                    "name": row.name, "phone": row.phone, "wechat": row.wechat,
+                    "name": row.name, "phone": phone, "wechat": wechat,
                     "source": (row.source or "").strip() or default_source,
                     "intention_level": row.intention_level, "remark": row.remark,
                     "matchmaker_id": default_matchmaker_id, "promoter_id": default_promoter_id,
@@ -1178,8 +1202,13 @@ async def lead_options(
             FROM user_matchmaker_apply a JOIN users u ON u.id = a.user_id
             WHERE a.application_type = 'promoter' AND a.status = 1 ORDER BY u.id"""))).mappings().all()
     ]
+    stores = [
+        CustomerLeadOption(value=str(row["id"]), label=row["label"])
+        for row in (await db.execute(text("""SELECT id, COALESCE(NULLIF(display_name, ''), name) AS label
+            FROM organization WHERE org_type = 'store' AND status = 1 ORDER BY id"""))).mappings().all()
+    ]
     tags = [
         CustomerLeadOption(value=row["name"], label=row["name"])
         for row in (await db.execute(text("SELECT name FROM customer_lead_tag WHERE enabled = 1 ORDER BY sort, id"))).mappings().all()
     ]
-    return CustomerLeadOptions(sources=sources, matchmakers=matchmakers, promoters=promoters, tags=tags)
+    return CustomerLeadOptions(sources=sources, matchmakers=matchmakers, promoters=promoters, stores=stores, tags=tags)

@@ -34,6 +34,7 @@ from app.core.profile_tags import (
     split_personal_tags,
 )
 from app.services.content_filter import moderate_text
+from app.services.organization import auto_assign_new_member
 from app.services.regions import region_display
 from app.schemas.admin import MediaReviewRequest, MediaReviewResponse
 from app.schemas.auth import (
@@ -60,6 +61,36 @@ VIDEO_MAX_SECONDS = 30
 MAX_PHOTOS = 9
 IMAGE_MAX_PIXELS = 25_000_000
 
+# user_profile.education_level 的存储刻度（建表注释与 discovery.get_filter_options、
+# admin_home 统计、ai/search._AI_EDU_TO_STORAGE 一致）：1=高中及以下 … 5=博士，
+# 数值即档案编辑页 educationOptions 的下标，SQL 语义为「及以上」比较。
+# AI 画像快照用的是另一套 1-6 刻度（1=初中及以下…6=博士，见 prompts/profile_extract.py），
+# 进这张表前必须换算，别把两套字典混用。
+EDUCATION_LEVEL_LABELS: dict[int, str] = {
+    1: "高中及以下",
+    2: "大专",
+    3: "本科",
+    4: "硕士",
+    5: "博士",
+}
+
+EDUCATION_LEVEL_BY_LABEL: dict[str, int] = {
+    label: level for level, label in EDUCATION_LEVEL_LABELS.items()
+}
+
+# 红娘录入表单的最低档写作「高中及以下」，与存储档位文案同义；其余档位用同一批词。
+EDUCATION_LEVEL_BY_LABEL.setdefault("高中及以下", 1)
+
+
+def education_level_from_label(raw: Any) -> int | None:
+    """把学历文案翻译为存储档位；字典外的值返回 None，不做相近猜测。"""
+    if raw is None:
+        return None
+    text_value = str(raw).strip()
+    if not text_value:
+        return None
+    return EDUCATION_LEVEL_BY_LABEL.get(text_value)
+
 COMPLETION_RULES: tuple[tuple[str, str, int], ...] = (
     ("gender", "性别", 7),
     ("birthday", "出生日期/年龄", 7),
@@ -80,6 +111,28 @@ COMPLETION_RULES: tuple[tuple[str, str, int], ...] = (
     ("realname", "实名认证", 5),
     ("single_pledge", "单身承诺", 1),
 )
+
+# 会员端「资料填写」里「基础信息」那一栏的必选项，对齐 xuanshiai-vue/pages/user/edit.uvue 的基础信息编辑器。
+# 昵称注册时就有；头像、相册、自我介绍、兴趣标签、择偶要求、认证分属其他卡片，
+# 公司、微信号、MBTI 是选填项，都不作为进入资料待审的门槛。
+BASIC_PROFILE_COMPLETION_KEYS: tuple[str, ...] = (
+    "gender",
+    "birthday",
+    "location",
+    "marriage",
+    "occupation",
+    "education",
+    "income",
+    "height",
+    "weight",
+    "hometown",
+)
+
+
+def basic_profile_completed(completed: dict[str, bool]) -> bool:
+    """基础信息那一栏是否填完；自然注册会员据此自动建归属并进入资料待审。"""
+    return all(completed.get(key, False) for key in BASIC_PROFILE_COMPLETION_KEYS)
+
 
 INTRO_TEMPLATES: tuple[dict[str, str], ...] = (
     {
@@ -288,6 +341,8 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
     result = await db.execute(
         text("""SELECT u.id AS user_id, u.nickname, u.gender, u.birthday, u.is_married, u.avatar,
                       p.height, p.weight, p.occupation, p.industry, p.education_level, p.income,
+                      p.house, p.car, p.ethnicity, p.ideal_partner,
+                      p.hometown AS hometown_text, p.residence AS residence_text,
                       p.hometown_province_code, p.hometown_city_code, p.hometown_district_code,
                       p.residence_province_code, p.residence_city_code, p.residence_district_code,
                       p.self_intro, p.qa_answers, p.interest_tags, p.personality_tags, p.mbti, p.tags,
@@ -336,12 +391,16 @@ async def get_profile(db: AsyncSession, user_id: int, public: bool = False) -> d
         if income is not None
         else None
     )
+    # 地区展示：有编码按编码现拼，没有编码回落到旧文本列（红娘代录的会员只有文本，
+    # 口径与红娘待审卡片一致——卡片显示了地区而主页显示「未填写」是最容易被当成 bug 的组合）。
+    legacy_hometown = str(data.get("hometown_text") or "").strip()
+    legacy_residence = str(data.get("residence_text") or "").strip()
     data["hometown_display"] = region_display(
         data.get("hometown_province_code"), data.get("hometown_city_code"), data.get("hometown_district_code")
-    )
+    ) or legacy_hometown or None
     data["residence_display"] = region_display(
         data.get("residence_province_code"), data.get("residence_city_code"), data.get("residence_district_code")
-    )
+    ) or legacy_residence or None
     if public:
         # Public profile responses must not expose exact location or income by default.
         for field in ("income", "hometown_province_code", "hometown_city_code", "hometown_district_code", "residence_province_code", "residence_city_code", "residence_district_code"):
@@ -375,9 +434,15 @@ async def update_profile(
     db: AsyncSession,
     user_id: int,
     request: ProfileUpdateRequest,
+    allow_gender_change: bool = False,
     *,
     commit: bool = True,
 ) -> dict[str, Any]:
+    """更新用户资料并重算完整度。
+
+    allow_gender_change 供服务红娘代为修改会员资料使用：本人自助编辑时性别一经提交不可更改，
+    红娘需要纠正录入错误，因此代改路径放行。
+    """
     values = request.model_dump(exclude_unset=True)
     if "personal_tags" in values:
         selected = values.pop("personal_tags")
@@ -398,7 +463,7 @@ async def update_profile(
     if "birthday" in values and values["birthday"] and _calculate_age(values["birthday"]) < 18:
         raise HTTPException(422, detail="用户必须年满18周岁")
     await _lock_profile_update(db, user_id)
-    if "gender" in values:
+    if "gender" in values and not allow_gender_change:
         result = await db.execute(text("SELECT gender FROM users WHERE id = :id FOR UPDATE"), {"id": user_id})
         old_gender = result.scalar()
         if old_gender is not None and old_gender != values["gender"]:
@@ -446,7 +511,8 @@ async def update_profile(
             text(f"INSERT INTO user_profile ({', '.join(columns)}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}"),
             {"user_id": user_id, **values},
         )
-    await recalculate_completion(db, user_id)
+    _, completed = await recalculate_completion_state(db, user_id)
+    await auto_assign_new_member(db, user_id, basic_profile_completed(completed))
     changed_fields = tuple(request.model_dump(exclude_unset=True).keys())
     if "personal_tags" in changed_fields:
         changed_fields = tuple(
@@ -495,7 +561,7 @@ async def update_nickname(
     )
 
 
-async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
+async def recalculate_completion_state(db: AsyncSession, user_id: int) -> tuple[float, dict[str, bool]]:
     # 锁序统一：先锁 users 行，再写 user_profile_completion。
     # 「我的」页并行请求 /users/me/completion 与 /users/me/overview（后者内部
     # 也调用本函数）会各自 UPSERT user_profile_completion 再 UPDATE users；
@@ -529,7 +595,7 @@ async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
         "gender": row["gender"] in (1, 2),
         "birthday": bool(row["birthday"] and _calculate_age(row["birthday"]) >= 18),
         "location": bool(row["residence_province_code"] and row["residence_city_code"]),
-        "marriage": row["is_married"] in (1, 2, 3),
+        "marriage": row["is_married"] is not None,
         "occupation": bool(row["occupation"]),
         "education": row["education_level"] is not None,
         "income": row["income"] is not None,
@@ -574,6 +640,11 @@ async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
         {"user_id": user_id, **{key: int(value) for key, value in columns.items()}, "score": score},
     )
     await db.execute(text("UPDATE users SET data_complete_rate = :score WHERE id = :id"), {"score": score, "id": user_id})
+    return score, completed
+
+
+async def recalculate_completion(db: AsyncSession, user_id: int) -> float:
+    score, _ = await recalculate_completion_state(db, user_id)
     return score
 
 
@@ -601,7 +672,7 @@ async def get_completion(db: AsyncSession, user_id: int) -> CompletionResponse:
         "gender": row["gender"] in (1, 2),
         "birthday": bool(row["birthday"] and _calculate_age(row["birthday"]) >= 18),
         "location": bool(row["residence_province_code"] and row["residence_city_code"]),
-        "marriage": row["is_married"] in (1, 2, 3),
+        "marriage": row["is_married"] is not None,
         "occupation": bool(row["occupation"]),
         "education": row["education_level"] is not None,
         "income": row["income"] is not None,
@@ -687,7 +758,9 @@ async def get_preferences(db: AsyncSession, user_id: int) -> dict[str, Any]:
         return {
             "user_id": user_id, "age_min": None, "age_max": None, "height_min": None,
             "height_max": None, "education_min": None, "income_min": None,
-            "marriage_status": None, "preferred_province_code": None, "preferred_city_codes": [],
+            "marriage_status": None, "occupation_requirement": None,
+            "marriage_accept": None, "wedding_plan": None,
+            "preferred_province_code": None, "preferred_city_codes": [],
             "accept_long_distance": False, "accept_cross_province": False,
             "housing_requirement": None, "smoking_requirement": None,
             "drinking_requirement": None, "dating_goal": None,
@@ -720,7 +793,8 @@ async def update_preferences(db: AsyncSession, user_id: int, request: Preference
             text(f"INSERT INTO user_partner_preference ({', '.join(columns)}) VALUES ({placeholders})"),
             {"user_id": user_id, **values},
         )
-    await recalculate_completion(db, user_id)
+    _, completed = await recalculate_completion_state(db, user_id)
+    await auto_assign_new_member(db, user_id, basic_profile_completed(completed))
     if values:
         await increment_revision_and_enqueue(
             db,
@@ -734,7 +808,10 @@ async def update_preferences(db: AsyncSession, user_id: int, request: Preference
     return await get_preferences(db, user_id)
 
 
-async def upload_avatar(db: AsyncSession, user_id: int, file: UploadFile) -> dict[str, Any]:
+async def upload_avatar(
+    db: AsyncSession, user_id: int, file: UploadFile, auto_approve: bool = False
+) -> dict[str, Any]:
+    """上传头像。auto_approve 供服务红娘代传使用，直接标记为审核通过。"""
     data = await _read_limited(file, IMAGE_MAX_BYTES)
     image_data, thumbnail_data = await asyncio.to_thread(_image_outputs, data)
     name = uuid.uuid4().hex
@@ -752,11 +829,12 @@ async def upload_avatar(db: AsyncSession, user_id: int, file: UploadFile) -> dic
         text("""INSERT INTO user_media (user_id, media_type, file_url, storage_key, thumbnail_url,
                    mime_type, file_size, sort_order, is_primary, review_status)
                    VALUES (:user_id, 'avatar', :url, :storage_key, :thumbnail_url,
-                   'image/webp', :file_size, 0, 1, 0)"""),
-        {"user_id": user_id, "url": url, "storage_key": str(image_path), "thumbnail_url": thumbnail_url, "file_size": len(image_data)},
+                   'image/webp', :file_size, 0, 1, :review_status)"""),
+        {"user_id": user_id, "url": url, "storage_key": str(image_path), "thumbnail_url": thumbnail_url, "file_size": len(image_data), "review_status": 1 if auto_approve else 0},
     )
     await db.execute(text("UPDATE users SET avatar = :avatar, updated_at = UTC_TIMESTAMP() WHERE id = :id"), {"avatar": url, "id": user_id})
-    await recalculate_completion(db, user_id)
+    _, completed = await recalculate_completion_state(db, user_id)
+    await auto_assign_new_member(db, user_id, basic_profile_completed(completed))
     await increment_revision_and_enqueue(
         db,
         user_id,
@@ -796,7 +874,10 @@ async def upload_background(db: AsyncSession, user_id: int, file: UploadFile) ->
     return _media_response(media.mappings().one())
 
 
-async def upload_photo(db: AsyncSession, user_id: int, file: UploadFile) -> dict[str, Any]:
+async def upload_photo(
+    db: AsyncSession, user_id: int, file: UploadFile, auto_approve: bool = False
+) -> dict[str, Any]:
+    """上传相册图片。auto_approve 供服务红娘代传使用，直接标记为审核通过。"""
     result = await db.execute(text("SELECT COUNT(*) FROM user_media WHERE user_id = :user_id AND media_type = 'photo' AND deleted_at IS NULL"), {"user_id": user_id})
     if result.scalar() >= MAX_PHOTOS:
         raise HTTPException(409, detail="相册最多保存9张图片")
@@ -819,12 +900,13 @@ async def upload_photo(db: AsyncSession, user_id: int, file: UploadFile) -> dict
         text("""INSERT INTO user_media (user_id, media_type, file_url, storage_key, thumbnail_url,
                    mime_type, file_size, sort_order, is_primary, review_status)
                    VALUES (:user_id, 'photo', :url, :storage_key, :thumbnail_url,
-                   'image/webp', :file_size, :sort_order, :is_primary, 0)"""),
-        {"user_id": user_id, "url": url, "storage_key": str(image_path), "thumbnail_url": thumbnail_url, "file_size": len(image_data), "sort_order": sort_order, "is_primary": int(is_primary)},
+                   'image/webp', :file_size, :sort_order, :is_primary, :review_status)"""),
+        {"user_id": user_id, "url": url, "storage_key": str(image_path), "thumbnail_url": thumbnail_url, "file_size": len(image_data), "sort_order": sort_order, "is_primary": int(is_primary), "review_status": 1 if auto_approve else 0},
     )
     if is_primary:
         await db.execute(text("UPDATE users SET avatar = :avatar, updated_at = UTC_TIMESTAMP() WHERE id = :id"), {"avatar": url, "id": user_id})
-    await recalculate_completion(db, user_id)
+    _, completed = await recalculate_completion_state(db, user_id)
+    await auto_assign_new_member(db, user_id, basic_profile_completed(completed))
     await db.commit()
     media = await db.execute(text("SELECT id, media_type, file_url, thumbnail_url, sort_order, is_primary, duration_seconds FROM user_media WHERE id = :id"), {"id": result.lastrowid})
     return _media_response(media.mappings().one())

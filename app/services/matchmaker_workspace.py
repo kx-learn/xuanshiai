@@ -2,27 +2,45 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 import base64
 import json
 from secrets import token_urlsafe
 
+import aiofiles
 import httpx
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from app.api.dependencies import CurrentUser
 from app.core.config import settings
+from app.core.security import lead_convert_password_fields
+from app.services.auth import ensure_default_user_role
 from app.services.customer_lead_contact import (
     ensure_contact_available,
     normalize_contact,
     raise_duplicate_contact,
 )
+from app.services.profile import (
+    EDUCATION_LEVEL_LABELS,
+    _image_outputs,
+    _read_limited,
+    education_level_from_label,
+    recalculate_completion,
+)
+from app.services.regions import region_codes_from_text, region_display
 from app.schemas.matchmaker_workspace import (
     MatchmakerWorkspaceAccess,
+    MatchmakerHomepage,
+    MatchmakerHomepageCase,
+    MatchmakerHomepageUpdate,
     MatchmakerWorkspaceDashboard,
     MatchmakerWorkspaceIdentity,
     MatchmakerWorkspaceProfile,
@@ -46,6 +64,7 @@ from app.schemas.matchmaker_workspace import (
     WorkspaceAbandonRequest,
     WorkspaceAssignRequest,
     WorkspaceLead,
+    WorkspaceLevel,
     WorkspaceLeadConvertRequest,
     WorkspaceLeadConvertResult,
     WorkspaceLeadCreate,
@@ -139,7 +158,14 @@ async def _has_active_role(db: AsyncSession, user_id: int, role_code: str) -> bo
 async def workspace_access(
     db: AsyncSession, current: CurrentUser
 ) -> MatchmakerWorkspaceAccess:
-    if not await _has_active_role(db, current.id, "service_matchmaker"):
+    return await workspace_access_for_user(db, current.id)
+
+
+async def workspace_access_for_user(
+    db: AsyncSession, user_id: int
+) -> MatchmakerWorkspaceAccess:
+    """按用户 ID 判定工作台准入；后台预览前台要按被查看的红娘取，不能依赖登录态。"""
+    if not await _has_active_role(db, user_id, "service_matchmaker"):
         return MatchmakerWorkspaceAccess(
             can_access=False,
             role_status="inactive",
@@ -151,15 +177,10 @@ async def workspace_access(
                 """SELECT level, organization_id FROM matchmaker_workspace_profile
                 WHERE user_id = :user_id AND status = 1"""
             ),
-            {"user_id": current.id},
+            {"user_id": user_id},
         )
     ).mappings().first()
-    if row and row["level"] == "SUPER" and row["organization_id"] is None:
-        return MatchmakerWorkspaceAccess(
-            can_access=False,
-            role_status="inactive",
-            message="超级服务红娘尚未绑定有效组织范围",
-        )
+    # SUPER 且不挂门店 = 总店超级红娘（平台范围），不再是「未绑定组织」的坏状态。
     return MatchmakerWorkspaceAccess(
         can_access=True,
         role_status="active",
@@ -169,7 +190,11 @@ async def workspace_access(
 
 
 async def require_workspace(db: AsyncSession, current: CurrentUser) -> WorkspaceActor:
-    access = await workspace_access(db, current)
+    return await require_workspace_for_user(db, current.id)
+
+
+async def require_workspace_for_user(db: AsyncSession, user_id: int) -> WorkspaceActor:
+    access = await workspace_access_for_user(db, user_id)
     if not access.can_access:
         raise HTTPException(403, detail=access.message)
     row = (
@@ -181,15 +206,26 @@ async def require_workspace(db: AsyncSession, current: CurrentUser) -> Workspace
                 LEFT JOIN matchmaker_workspace_profile p ON p.user_id = u.id AND p.status = 1
                 WHERE u.id = :user_id"""
             ),
-            {"user_id": current.id},
+            {"user_id": user_id},
         )
     ).mappings().one()
     return WorkspaceActor(
-        user_id=current.id,
+        user_id=user_id,
         display_name=str(row["display_name"]),
         level=str(row["level"]),
         organization_id=int(row["organization_id"]) if row["organization_id"] else None,
     )
+
+
+def require_review_authority(actor: WorkspaceActor) -> WorkspaceActor:
+    """公开资料审核只对总店（超级）红娘开放。
+
+    普通红娘仍可代会员编辑资料、重新提交待审，但不能判定通过或驳回；
+    范围过滤（_member_scope_predicate）在这道闸门之后仍然生效，总店红娘之间不互相越范围。
+    """
+    if actor.level != "SUPER":
+        raise HTTPException(403, detail="仅总店红娘可审核会员公开资料")
+    return actor
 
 
 def _scope_predicate(actor: WorkspaceActor, alias: str, params: dict[str, object]) -> str:
@@ -197,9 +233,24 @@ def _scope_predicate(actor: WorkspaceActor, alias: str, params: dict[str, object
         params["scope_matchmaker_id"] = actor.user_id
         return f"{alias}.matchmaker_id = :scope_matchmaker_id"
     if actor.organization_id is None:
-        raise HTTPException(403, detail="超级服务红娘尚未绑定有效组织范围")
+        # 总店超级红娘：不挂门店，范围是平台全部，与后台须知「总店-超级红娘＝查看平台全部客源」一致。
+        return "1 = 1"
     params["scope_organization_id"] = actor.organization_id
     return f"{alias}.organization_id = :scope_organization_id"
+
+
+def _applied_matchmaker_exists(user_id_sql: str) -> str:
+    """后台「红娘管理」的建档口径（SELECT_STAFF）：申请生效 + 档案未软删。
+
+    小程序可选红娘名单必须过同一道闸门，否则 2026-09-06 那批只有 `user_role` 与工作台档案、
+    后台从没建过档的种子号会一直挂在「修改红娘」名单里。
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM user_matchmaker_apply ma "
+        f"LEFT JOIN matchmaker_profile mp ON mp.user_id = ma.user_id "
+        f"WHERE ma.user_id = {user_id_sql} AND ma.application_type = 'service_matchmaker' "
+        f"AND ma.status = 1 AND mp.deleted_at IS NULL)"
+    )
 
 
 def _member_scope_predicate(actor: WorkspaceActor, params: dict[str, object]) -> str:
@@ -207,7 +258,8 @@ def _member_scope_predicate(actor: WorkspaceActor, params: dict[str, object]) ->
         params["scope_matchmaker_id"] = actor.user_id
         return "EXISTS (SELECT 1 FROM resource_assignment ra WHERE ra.user_id = u.id AND ra.status = 1 AND ra.matchmaker_id = :scope_matchmaker_id)"
     if actor.organization_id is None:
-        raise HTTPException(403, detail="超级服务红娘尚未绑定有效组织范围")
+        # 总店超级红娘：全部「已归属」会员，仍要求有生效归属行，否则资料待审会把全站注册用户都算进来。
+        return "EXISTS (SELECT 1 FROM resource_assignment ra WHERE ra.user_id = u.id AND ra.status = 1)"
     params["scope_organization_id"] = actor.organization_id
     return "EXISTS (SELECT 1 FROM resource_assignment ra WHERE ra.user_id = u.id AND ra.status = 1 AND ra.organization_id = :scope_organization_id)"
 
@@ -252,6 +304,176 @@ async def update_workspace_profile(
         organization_id=actor.organization_id,
     )
     return await get_workspace_profile(db, updated)
+
+
+async def sync_workspace_profile(
+    db: AsyncSession, user_id: int, *, overwrite: bool, level: WorkspaceLevel | None = None
+) -> None:
+    """把后台侧的服务红娘身份补齐进工作台档案，消除「后台红娘管理有、小程序修改红娘没有」。
+
+    名称取 users.nickname，门店取 organization_member 的 store_matchmaker 有效绑定。
+    overwrite=False 用于申请审核通过：已有档案行是红娘在工作台自设的，不覆盖。
+    level 只在后台建档/编辑显式传参时写入（对应后台「总店-超级红娘 / 总店-普通红娘」下拉），
+    不传时保持原值——申请审核通过不会把红娘升降级。
+    """
+    row = (
+        await db.execute(
+            text(
+                """SELECT COALESCE(u.nickname, '服务红娘') AS display_name,
+                (SELECT om.organization_id FROM organization_member om
+                WHERE om.user_id = u.id AND om.role_code = 'store_matchmaker' AND om.status = 1
+                ORDER BY om.id DESC LIMIT 1) AS organization_id
+                FROM users u WHERE u.id = :user_id"""
+            ),
+            {"user_id": user_id},
+        )
+    ).mappings().first()
+    if row is None:
+        return
+    updates = ["status = 1", "updated_at = UTC_TIMESTAMP()"]
+    if level is not None:
+        updates.append("level = VALUES(level)")
+    if overwrite:
+        updates = [
+            "display_name = VALUES(display_name)",
+            "organization_id = VALUES(organization_id)",
+            *updates,
+        ]
+    await db.execute(
+        text(
+            f"""INSERT INTO matchmaker_workspace_profile
+            (user_id, display_name, level, organization_id, status)
+            VALUES (:user_id, :display_name, COALESCE(:level, 'NORMAL'), :organization_id, 1)
+            ON DUPLICATE KEY UPDATE {", ".join(updates)}"""
+        ),
+        {
+            "user_id": user_id,
+            "display_name": str(row["display_name"])[:64],
+            "level": level,
+            "organization_id": int(row["organization_id"]) if row["organization_id"] is not None else None,
+        },
+    )
+
+
+def _homepage_details(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _homepage_specialties(raw: Any) -> list[str]:
+    items = raw if isinstance(raw, list) else []
+    return [str(item).strip() for item in items if str(item).strip()][:5]
+
+
+def _homepage_cases(raw: Any) -> list[MatchmakerHomepageCase]:
+    items = raw if isinstance(raw, list) else []
+    result: list[MatchmakerHomepageCase] = []
+    for entry in items[:3]:
+        if not isinstance(entry, dict):
+            continue
+        description = str(entry.get("description") or "").strip()
+        if not description:
+            continue
+        images = entry.get("images") if isinstance(entry.get("images"), list) else []
+        result.append(
+            MatchmakerHomepageCase(
+                description=description,
+                images=[str(image).strip() for image in images if str(image).strip()][:3],
+            )
+        )
+    return result
+
+
+async def get_workspace_homepage(
+    db: AsyncSession, actor: WorkspaceActor
+) -> MatchmakerHomepage:
+    """主页编辑读取入驻申请表：公开红娘主页与后台红娘编辑都读同一份资料。"""
+    row = (
+        await db.execute(
+            text(
+                """SELECT app.id AS application_id, app.user_id, u.nickname, u.avatar,
+                    app.slogan, app.intro, app.application_details
+                FROM user_matchmaker_apply app
+                JOIN users u ON u.id = app.user_id
+                WHERE app.user_id = :user_id AND app.application_type = 'service_matchmaker'"""
+            ),
+            {"user_id": actor.user_id},
+        )
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(404, detail="未找到红娘入驻档案，暂不能编辑主页")
+    details = _homepage_details(row["application_details"])
+    return MatchmakerHomepage(
+        user_id=int(row["user_id"]),
+        nickname=str(row["nickname"] or "服务红娘"),
+        avatar=row["avatar"],
+        slogan=row["slogan"],
+        specialties=_homepage_specialties(details.get("specialties")),
+        introduction=str(row["intro"] or ""),
+        success_cases=_homepage_cases(details.get("success_cases")),
+    )
+
+
+async def update_workspace_homepage(
+    db: AsyncSession,
+    actor: WorkspaceActor,
+    request: MatchmakerHomepageUpdate,
+) -> MatchmakerHomepage:
+    row = (
+        await db.execute(
+            text(
+                """SELECT app.id AS application_id, app.application_details
+                FROM user_matchmaker_apply app
+                WHERE app.user_id = :user_id AND app.application_type = 'service_matchmaker'
+                FOR UPDATE"""
+            ),
+            {"user_id": actor.user_id},
+        )
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(404, detail="未找到红娘入驻档案，暂不能编辑主页")
+
+    values = request.model_dump(exclude_unset=True)
+    if "nickname" in values:
+        await db.execute(
+            text("UPDATE users SET nickname = :value WHERE id = :id"),
+            {"value": values["nickname"], "id": actor.user_id},
+        )
+    if "slogan" in values:
+        await db.execute(
+            text("UPDATE user_matchmaker_apply SET slogan = :value WHERE id = :id"),
+            {"value": values["slogan"], "id": int(row["application_id"])},
+        )
+    if "introduction" in values:
+        await db.execute(
+            text("UPDATE user_matchmaker_apply SET intro = :value WHERE id = :id"),
+            {"value": values["introduction"], "id": int(row["application_id"])},
+        )
+    if "specialties" in values or "success_cases" in values:
+        # application_details 还带着微信、期望价格等审核资料，只覆盖主页字段。
+        details = _homepage_details(row["application_details"])
+        if "specialties" in values:
+            details["specialties"] = values["specialties"] or []
+        if "success_cases" in values:
+            details["success_cases"] = values["success_cases"]
+        await db.execute(
+            text("UPDATE user_matchmaker_apply SET application_details = :value WHERE id = :id"),
+            {"value": json.dumps(details, ensure_ascii=False), "id": int(row["application_id"])},
+        )
+
+    await _audit(
+        db,
+        actor.user_id,
+        "matchmaker_workspace.homepage.update",
+        "user_matchmaker_apply",
+        int(row["application_id"]),
+    )
+    await db.commit()
+    return await get_workspace_homepage(db, actor)
 
 
 async def workspace_dashboard(
@@ -312,11 +534,14 @@ async def workspace_dashboard(
     )
     meeting_params: dict[str, object] = {}
     meeting_scope = _scope_predicate(actor, "mr", meeting_params)
+    # 与小程序工作台的「约见申请」同口径：待处理 = 申请仍在跟进且尚未安排约见；
+    # 已安排约见的申请转入「待见面」，不再重复计入待处理。
     meeting_request_count = int(
         await db.scalar(
             text(
                 f"""SELECT COUNT(*) FROM meeting_request mr WHERE {meeting_scope}
-                AND mr.status = 'SUBMITTED'"""
+                AND mr.status IN ('SUBMITTED', 'CONTACTED', 'ACCEPTED')
+                AND NOT EXISTS (SELECT 1 FROM meeting_record m WHERE m.request_id = mr.id)"""
             ),
             meeting_params,
         )
@@ -391,12 +616,14 @@ def _introduction_from_row(row: object) -> WorkspaceIntroduction:
             nickname=str(values["from_nickname"] or "未命名会员"),
             avatar=str(values["from_avatar"]) if values.get("from_avatar") else None,
             gender=int(values["from_gender"]) if values.get("from_gender") in {1, 2} else None,
+            is_vip=bool(values.get("from_is_vip")),
         ),
         to_user=WorkspaceIntroductionPerson(
             user_id=int(values["to_user_id"]),
             nickname=str(values["to_nickname"] or "未命名会员"),
             avatar=str(values["to_avatar"]) if values.get("to_avatar") else None,
             gender=int(values["to_gender"]) if values.get("to_gender") in {1, 2} else None,
+            is_vip=bool(values.get("to_is_vip")),
         ),
     )
 
@@ -428,7 +655,13 @@ async def list_workspace_introductions(
         text(
             f"""SELECT mi.id, mi.status, mi.failure_reason, mi.note, mi.created_at, mi.updated_at,
             fu.id AS from_user_id, fu.nickname AS from_nickname, fu.avatar AS from_avatar, fu.gender AS from_gender,
-            tu.id AS to_user_id, tu.nickname AS to_nickname, tu.avatar AS to_avatar, tu.gender AS to_gender
+            EXISTS (SELECT 1 FROM user_membership mf WHERE mf.user_id = fu.id AND mf.status = 1
+                    AND (mf.start_at IS NULL OR mf.start_at <= UTC_TIMESTAMP())
+                    AND (mf.end_at IS NULL OR mf.end_at > UTC_TIMESTAMP())) AS from_is_vip,
+            tu.id AS to_user_id, tu.nickname AS to_nickname, tu.avatar AS to_avatar, tu.gender AS to_gender,
+            EXISTS (SELECT 1 FROM user_membership mt WHERE mt.user_id = tu.id AND mt.status = 1
+                    AND (mt.start_at IS NULL OR mt.start_at <= UTC_TIMESTAMP())
+                    AND (mt.end_at IS NULL OR mt.end_at > UTC_TIMESTAMP())) AS to_is_vip
             {base} WHERE {clause} ORDER BY mi.created_at DESC, mi.id DESC LIMIT :limit OFFSET :offset"""
         ),
         params,
@@ -467,12 +700,14 @@ def _meeting_request_from_row(row: object) -> WorkspaceMeetingRequest:
             nickname=str(values["applicant_nickname"] or "未命名会员"),
             avatar=str(values["applicant_avatar"]) if values.get("applicant_avatar") else None,
             gender=int(values["applicant_gender"]) if values.get("applicant_gender") in {1, 2} else None,
+            is_vip=bool(values.get("applicant_is_vip")),
         ),
         target=WorkspaceIntroductionPerson(
             user_id=int(values["target_user_id"]),
             nickname=str(values["target_nickname"] or "未命名会员"),
             avatar=str(values["target_avatar"]) if values.get("target_avatar") else None,
             gender=int(values["target_gender"]) if values.get("target_gender") in {1, 2} else None,
+            is_vip=bool(values.get("target_is_vip")),
         ),
         meeting=meeting,
     )
@@ -507,7 +742,13 @@ async def list_workspace_meeting_requests(
         text(
             f"""SELECT mr.id, mr.status, mr.note, mr.created_at, mr.updated_at,
             au.id AS applicant_user_id, au.nickname AS applicant_nickname, au.avatar AS applicant_avatar, au.gender AS applicant_gender,
+            EXISTS (SELECT 1 FROM user_membership ma WHERE ma.user_id = au.id AND ma.status = 1
+                    AND (ma.start_at IS NULL OR ma.start_at <= UTC_TIMESTAMP())
+                    AND (ma.end_at IS NULL OR ma.end_at > UTC_TIMESTAMP())) AS applicant_is_vip,
             tu.id AS target_user_id, tu.nickname AS target_nickname, tu.avatar AS target_avatar, tu.gender AS target_gender,
+            EXISTS (SELECT 1 FROM user_membership mt WHERE mt.user_id = tu.id AND mt.status = 1
+                    AND (mt.start_at IS NULL OR mt.start_at <= UTC_TIMESTAMP())
+                    AND (mt.end_at IS NULL OR mt.end_at > UTC_TIMESTAMP())) AS target_is_vip,
             mu.nickname AS matchmaker_nickname, mwp.display_name AS matchmaker_display_name,
             m.id AS meeting_id, m.status AS meeting_status, m.scheduled_at, m.location, m.cancel_reason
             {base} WHERE {clause} ORDER BY mr.created_at DESC, mr.id DESC LIMIT :limit OFFSET :offset"""
@@ -525,8 +766,9 @@ async def list_workspace_meeting_requests(
     )
 
 
-_LEAD_SELECT = """SELECT l.id, l.name, l.phone, l.wechat, l.source, l.intention_level, l.status,
+_LEAD_SELECT = """SELECT l.id, l.name, l.real_name, l.phone, l.wechat, l.source, l.intention_level, l.status,
     l.next_follow_at, l.created_at, l.updated_at, l.remark, l.matchmaker_id, l.converted_user_id,
+    l.photo, l.gender, l.birthday,
     COALESCE(p.display_name, u.nickname) AS matchmaker_name,
     lf.last_follow_up_at
     FROM customer_lead l
@@ -561,7 +803,19 @@ async def list_workspace_leads(
     search: str | None,
 ) -> WorkspaceLeadPage:
     params: dict[str, object] = {"limit": page_size, "offset": (page - 1) * page_size}
-    where = [_scope_predicate(actor, "l", params)]
+    if actor.scope == "SELF":
+        # 普通红娘按「分派给自己」圈定范围；但弃海会把 matchmaker_id 清空，
+        # 导致自己再也查不到刚弃海的客源。这里按弃海记录兜底：只要存在
+        # 「由本人弃海且未恢复」的记录，就仍归入本人可见范围（可恢复）。
+        params["scope_matchmaker_id"] = actor.user_id
+        params["abandoned_by"] = actor.user_id
+        where = [
+            "(l.matchmaker_id = :scope_matchmaker_id OR EXISTS ("
+            "SELECT 1 FROM customer_lead_abandonment a WHERE a.lead_id = l.id "
+            "AND a.restored_at IS NULL AND a.abandoned_by = :abandoned_by))"
+        ]
+    else:
+        where = [_scope_predicate(actor, "l", params)]
     if status:
         where.append("l.status = :status")
         params["status"] = status
@@ -587,6 +841,33 @@ async def list_workspace_leads(
     )
 
 
+async def upload_lead_photo(
+    db: AsyncSession, actor: WorkspaceActor, file: UploadFile
+) -> dict[str, Any]:
+    """客源线索照片上传：写入 storage/uploads/leads/，返回可直接存入 photo 字段的 URL。"""
+    data = await _read_limited(file, 5 * 1024 * 1024)
+    image_data, thumbnail_data = await asyncio.to_thread(_image_outputs, data)
+    directory = Path(settings.upload_dir) / "leads"
+    directory.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex
+    image_path = directory / f"photo-{name}.webp"
+    thumbnail_path = directory / f"photo-{name}-thumb.webp"
+    await asyncio.gather(
+        _write_lead_photo(image_path, image_data),
+        _write_lead_photo(thumbnail_path, thumbnail_data),
+    )
+    return {
+        "url": f"/storage/uploads/leads/{image_path.name}",
+        "thumbnail_url": f"/storage/uploads/leads/{thumbnail_path.name}",
+        "size": len(image_data),
+    }
+
+
+async def _write_lead_photo(path: Path, data: bytes) -> None:
+    async with aiofiles.open(path, "wb") as fh:
+        await fh.write(data)
+
+
 async def create_workspace_lead(
     db: AsyncSession, actor: WorkspaceActor, request: WorkspaceLeadCreate
 ) -> WorkspaceLead:
@@ -597,8 +878,10 @@ async def create_workspace_lead(
         result = await db.execute(
             text(
                 """INSERT INTO customer_lead
-                (name, phone, wechat, source, intention_level, remark, matchmaker_id, organization_id, created_by)
-                VALUES (:name, :phone, :wechat, :source, :intention_level, :remark, :matchmaker_id, :organization_id, :created_by)"""
+                (name, real_name, phone, wechat, source, intention_level, remark, photo, gender, birthday,
+                 matchmaker_id, organization_id, created_by)
+                VALUES (:name, :real_name, :phone, :wechat, :source, :intention_level, :remark, :photo, :gender, :birthday,
+                 :matchmaker_id, :organization_id, :created_by)"""
             ),
             {
                 **request.model_dump(),
@@ -800,22 +1083,29 @@ async def list_workspace_lead_follow_ups(
 
 
 async def list_workspace_colleagues(db: AsyncSession, actor: WorkspaceActor) -> list[WorkspaceLeadFollower]:
-    """同组织可分派跟进的服务红娘；普通红娘仅能看到自己。"""
-    if actor.scope != "ORGANIZATION" or actor.organization_id is None:
+    """同组织可分派跟进的服务红娘；普通红娘仅能看到自己；总店超级红娘（不挂门店）为平台全部红娘。"""
+    if actor.scope != "ORGANIZATION":
         return [WorkspaceLeadFollower(user_id=actor.user_id, display_name=actor.display_name, is_self=True)]
-    params: dict[str, object] = {"organization_id": actor.organization_id}
+    params: dict[str, object] = {}
+    if actor.organization_id is None:
+        profile_filter, lead_filter = "", ""
+    else:
+        params["organization_id"] = actor.organization_id
+        profile_filter = " AND p.organization_id = :organization_id"
+        lead_filter = " AND m.organization_id = :organization_id"
     rows = await db.execute(
         text(
-            """SELECT p.user_id, COALESCE(p.display_name, u.nickname, '服务红娘') AS display_name
+            f"""SELECT p.user_id, COALESCE(p.display_name, u.nickname, '服务红娘') AS display_name
             FROM matchmaker_workspace_profile p
             JOIN users u ON u.id = p.user_id
-            WHERE p.organization_id = :organization_id AND p.status = 1
+            WHERE p.status = 1 AND {_applied_matchmaker_exists('p.user_id')}{profile_filter}
             UNION
             SELECT m.matchmaker_id, COALESCE(p2.display_name, u2.nickname, '服务红娘') AS display_name
             FROM customer_lead m
             LEFT JOIN matchmaker_workspace_profile p2 ON p2.user_id = m.matchmaker_id AND p2.status = 1
             LEFT JOIN users u2 ON u2.id = m.matchmaker_id
-            WHERE m.organization_id = :organization_id AND m.matchmaker_id IS NOT NULL AND m.status NOT IN ('LOST', 'CLOSED')
+            WHERE m.matchmaker_id IS NOT NULL AND m.status NOT IN ('LOST', 'CLOSED')
+            AND {_applied_matchmaker_exists('m.matchmaker_id')}{lead_filter}
             ORDER BY user_id"""
         ),
         params,
@@ -844,10 +1134,11 @@ async def assign_workspace_lead(
         return lead
     target = await db.execute(
         text(
-            """SELECT p.user_id, COALESCE(p.display_name, u.nickname, '服务红娘') AS display_name
+            f"""SELECT p.user_id, COALESCE(p.display_name, u.nickname, '服务红娘') AS display_name
             FROM matchmaker_workspace_profile p JOIN users u ON u.id = p.user_id
             WHERE p.user_id = :matchmaker_id AND p.status = 1
-            AND (:organization_id IS NULL OR p.organization_id = :organization_id) LIMIT 1"""
+            AND (:organization_id IS NULL OR p.organization_id = :organization_id)
+            AND {_applied_matchmaker_exists('p.user_id')} LIMIT 1"""
         ),
         {"matchmaker_id": request.matchmaker_id, "organization_id": actor.organization_id},
     )
@@ -901,14 +1192,15 @@ async def convert_workspace_lead(
         result = await db.execute(
             text(
                 """INSERT INTO users
-                (openid, phone, phone_verified_at, nickname, gender, status, data_complete_rate, register_ip)
-                VALUES (:openid, :phone, UTC_TIMESTAMP(), :nickname, :gender, 1, 0, '127.0.0.1')"""
+                (openid, phone, password, password_algo, phone_verified_at, nickname, gender, status, data_complete_rate, register_ip)
+                VALUES (:openid, :phone, :password, :password_algo, UTC_TIMESTAMP(), :nickname, :gender, 1, 0, '127.0.0.1')"""
             ),
             {
                 "openid": f"lead-convert-{lead_id}",
                 "phone": lead.phone,
                 "nickname": lead.name,
                 "gender": request.gender,
+                **lead_convert_password_fields(),
             },
         )
         user_id = int(result.lastrowid)
@@ -997,7 +1289,13 @@ async def list_workspace_members(
     rows = await db.execute(
         text(
             f"""SELECT u.id AS user_id, COALESCE(u.nickname, '未命名会员') AS nickname, u.avatar,
-            u.gender, u.birthday, p.hometown, p.residence, ua.education, ua.job,
+            u.gender, u.birthday, p.hometown, p.residence,
+            p.hometown_province_code, p.hometown_city_code, p.hometown_district_code,
+            p.residence_province_code, p.residence_city_code, p.residence_district_code,
+            ua.education AS auth_education,
+            COALESCE(ua.education_verified, 0) AS auth_education_verified,
+            p.education_level,
+            COALESCE(NULLIF(p.occupation, ''), ua.job) AS job,
             u.is_married, p.height, COALESCE(ua.realname_status, 0) AS realname_status,
             ra.matchmaker_id AS matchmaker_id,
             COALESCE(wp.display_name, mu.nickname) AS matchmaker_name,
@@ -1011,12 +1309,49 @@ async def list_workspace_members(
     count_params = {key: value for key, value in params.items() if key not in {"limit", "offset"}}
     total = int(await db.scalar(text(f"SELECT COUNT(*) {base} WHERE {clause}"), count_params) or 0)
     return WorkspaceMemberPage(
-        items=[WorkspaceMember(**dict(row)) for row in rows.mappings().all()],
+        items=[WorkspaceMember(**_workspace_member_row(dict(row))) for row in rows.mappings().all()],
         page=page,
         page_size=page_size,
         total=total,
         has_more=_page(total, page, page_size),
     )
+
+
+def _workspace_member_row(row: dict[str, Any]) -> dict[str, Any]:
+    """把 SQL 行整理成红娘卡片：地区由编码现拼，家乡/居住地为空时不再显示空白。
+
+    待审要审的是会员自己填的资料，而自助填写只写 user_profile（含省市区编码）；
+    user_auth 里只有红娘录入或认证材料留下的旧值，自助注册会员在那张表一行都没有。
+    """
+    row["hometown"] = row["hometown"] or region_display(
+        row.pop("hometown_province_code"), row.pop("hometown_city_code"), row.pop("hometown_district_code")
+    )
+    row["residence"] = row["residence"] or region_display(
+        row.pop("residence_province_code"), row.pop("residence_city_code"), row.pop("residence_district_code")
+    )
+    row["education"] = _member_education(row)
+    for key in ("hometown_province_code", "hometown_city_code", "hometown_district_code",
+                "residence_province_code", "residence_city_code", "residence_district_code",
+                "education_level", "auth_education", "auth_education_verified"):
+        row.pop(key, None)
+    return row
+
+
+def _member_education(row: dict[str, Any]) -> str | None:
+    """卡片上的学历：认证结论优先，其次会员自己选的档位，最后才是历史录入的文本。
+
+    学历认证通过后认证表里的文案就是核验过的事实，覆盖会员自填档位；未认证时
+    自填档位才是待审的内容，而 ``user_auth.education`` 只有红娘代录的会员才有值。
+    """
+    auth_education = row.get("auth_education")
+    if row.get("auth_education_verified") and auth_education:
+        return str(auth_education)
+    education_level = row.get("education_level")
+    if education_level is not None:
+        label = EDUCATION_LEVEL_LABELS.get(int(education_level))
+        if label is not None:
+            return label
+    return str(auth_education) if auth_education else None
 
 
 async def review_workspace_member(
@@ -1121,11 +1456,47 @@ async def list_member_follow_ups(
 async def get_member_contact(
     db: AsyncSession, actor: WorkspaceActor, member_id: int
 ) -> WorkspaceMemberContact:
-    await _require_scoped_member(db, actor, member_id)
-    phone = await db.scalar(text("SELECT phone FROM users WHERE id = :member_id"), {"member_id": member_id})
+    """受审计读取会员联系方式。
+
+    超级红娘可查看所有会员的联系方式；普通红娘仅能查看自己服务范围内的会员。
+    每次读取都会写入服务审计日志。
+    """
+    is_super = actor.level == "SUPER"
+    if not is_super:
+        await _require_scoped_member(db, actor, member_id)
+    row = (
+        (
+            await db.execute(
+                text(
+                    """SELECT u.id, u.nickname, u.phone,
+                        (SELECT p.wechat FROM user_profile p WHERE p.user_id = u.id LIMIT 1) AS wechat,
+                        (SELECT a.real_name FROM user_auth a WHERE a.user_id = u.id LIMIT 1) AS real_name
+                    FROM users u
+                    WHERE u.id = :member_id
+                    LIMIT 1"""
+                ),
+                {"member_id": member_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise HTTPException(404, detail="会员不存在")
     await _audit(db, actor.user_id, "matchmaker_workspace.member.contact.read", "user", member_id)
     await db.commit()
-    return WorkspaceMemberContact(user_id=member_id, phone=str(phone) if phone else None)
+    phone = row["phone"]
+    wechat = row["wechat"]
+    real_name = row["real_name"]
+    nickname = row["nickname"]
+    return WorkspaceMemberContact(
+        user_id=member_id,
+        nickname=str(nickname) if nickname else None,
+        real_name=str(real_name) if real_name else None,
+        phone=str(phone) if phone else None,
+        wechat=str(wechat) if wechat else None,
+        scope="ALL" if is_super else "SERVED",
+    )
 
 
 async def list_match_candidates(
@@ -1196,25 +1567,34 @@ async def list_match_history(
     page: int,
     page_size: int,
 ) -> WorkspaceMatchHistoryPage:
+    """某个会员的牵线记录。
+
+    数据源是 matchmaker_introduction：红娘在工作台手工添加的牵线、以及会员在小程序点「申请认识」
+    自动同步进来的牵线（record_member_application_introduction）都落这一张表，
+    所以这里的口径与工作台「牵线记录」中心、待牵线/牵线成功指标完全一致。
+    资源权限仍只按会员归属判定（_require_scoped_member）：会员在本红娘服务范围内，
+    就能看到 TA 名下的全部牵线记录，包括其他红娘为 TA 牵的线。
+    """
     await _require_scoped_member(db, actor, member_id)
     params = {"member_id": member_id, "limit": page_size, "offset": (page - 1) * page_size}
+    counterpart = "CASE WHEN mi.from_user_id = :member_id THEN mi.to_user_id ELSE mi.from_user_id END"
     rows = await db.execute(
         text(
-            """SELECT ma.id,
-            CASE WHEN ma.from_user_id = :member_id THEN ma.to_user_id ELSE ma.from_user_id END AS counterpart_user_id,
+            f"""SELECT mi.id,
+            {counterpart} AS counterpart_user_id,
             COALESCE(u.nickname, '未命名会员') AS counterpart_nickname,
-            ma.status,
-            CASE WHEN ma.from_user_id = :member_id THEN 'OUTGOING' ELSE 'INCOMING' END AS direction,
-            ma.created_at, ma.responded_at
-            FROM match_apply ma JOIN users u ON u.id = CASE WHEN ma.from_user_id = :member_id THEN ma.to_user_id ELSE ma.from_user_id END
-            WHERE ma.from_user_id = :member_id OR ma.to_user_id = :member_id
-            ORDER BY ma.id DESC LIMIT :limit OFFSET :offset"""
+            mi.status,
+            CASE WHEN mi.from_user_id = :member_id THEN 'OUTGOING' ELSE 'INCOMING' END AS direction,
+            mi.created_at, mi.updated_at
+            FROM matchmaker_introduction mi LEFT JOIN users u ON u.id = {counterpart}
+            WHERE mi.from_user_id = :member_id OR mi.to_user_id = :member_id
+            ORDER BY mi.created_at DESC, mi.id DESC LIMIT :limit OFFSET :offset"""
         ),
         params,
     )
     total = int(
         await db.scalar(
-            text("SELECT COUNT(*) FROM match_apply WHERE from_user_id = :member_id OR to_user_id = :member_id"),
+            text("SELECT COUNT(*) FROM matchmaker_introduction WHERE from_user_id = :member_id OR to_user_id = :member_id"),
             {"member_id": member_id},
         )
         or 0
@@ -1294,7 +1674,9 @@ async def list_member_matchmakers(
             FROM resource_assignment ra
             LEFT JOIN matchmaker_workspace_profile wp ON wp.user_id = ra.matchmaker_id AND wp.status = 1
             LEFT JOIN users u ON u.id = ra.matchmaker_id
-            WHERE ra.status = 1 AND ra.matchmaker_id IS NOT NULL"""
+            WHERE ra.status = 1 AND ra.matchmaker_id IS NOT NULL
+            AND """
+                + _applied_matchmaker_exists("ra.matchmaker_id")
             )
         )
     ).mappings().all():
@@ -1328,8 +1710,7 @@ async def assign_workspace_member_matchmaker(
     if target_id is not None:
         valid = await db.scalar(
             text(
-                """SELECT 1 FROM user_role
-                WHERE user_id = :id AND role_code = 'service_matchmaker' AND status = 1 LIMIT 1"""
+                f"SELECT 1 FROM users u WHERE u.id = :id AND {_applied_matchmaker_exists('u.id')} LIMIT 1"
             ),
             {"id": target_id},
         )
@@ -1969,9 +2350,28 @@ async def create_workspace_member(
         raise HTTPException(409, detail="手机号已注册")
     values = body.model_dump(exclude_none=True)
     remark = values.pop("remark", None)
+    # 择偶要求字段单独摘出，写入 user_partner_preference。
+    pref_keys = (
+        "age_min", "age_max", "height_min", "height_max", "education_min", "income_min",
+        "occupation_requirement", "marriage_accept", "housing_requirement", "smoking_requirement", "wedding_plan",
+    )
+    pref_values = {key: values.pop(key) for key in pref_keys if key in values}
     user_values = {key: values.pop(key) for key in ("phone", "nickname", "gender", "birthday", "is_married") if key in values}
     user_values["status"] = 1
     auth_values = {key: values.pop(key) for key in ("education", "job", "real_name") if key in values}
+    # 代录的资料必须同时落到会员自助档案的规范列上：主页、发现页和资料完整度读的都是
+    # user_profile 的 occupation / education_level / 省市区编码，只写 user_auth 或旧文本列
+    # 会让红娘录入的会员在主页一律显示「未填写」。
+    if auth_values.get("job"):
+        values["occupation"] = str(auth_values["job"])
+    entry_education_level = education_level_from_label(auth_values.get("education"))
+    if entry_education_level is not None:
+        values["education_level"] = entry_education_level
+    for region_field in ("hometown", "residence", "household"):
+        resolved_codes = region_codes_from_text(values.get(region_field))
+        for suffix, code in zip(("province_code", "city_code", "district_code"), resolved_codes):
+            if code is not None:
+                values[f"{region_field}_{suffix}"] = code
     if "tags" in values and values["tags"]:
         values["tags"] = json.dumps({"custom": [t for t in str(values["tags"]).split("|") if t]}, ensure_ascii=False)
     # drinking/religion/marriage_plan 等历史字段在部分库中不存在，随 remark 保留信息。
@@ -2001,6 +2401,8 @@ async def create_workspace_member(
         " VALUES (" + ", ".join(":" + key for key in user_values) + ", UTC_TIMESTAMP(), UTC_TIMESTAMP())"
     ), user_values)
     member_id = int(result.lastrowid)
+    # 录入即办号：补默认普通用户角色，会员后续用这个手机号验证码登录可直接进账号。
+    await ensure_default_user_role(db, member_id)
     if values:
         columns = ["user_id", *values]
         updates = ", ".join(f"{key} = VALUES({key})" for key in values)
@@ -2019,6 +2421,14 @@ async def create_workspace_member(
         "INSERT INTO matchmaker_member_review (user_id, status) VALUES (:user_id, 'PENDING')"
         " ON DUPLICATE KEY UPDATE status = 'PENDING', reviewed_at = NULL, reviewed_by = NULL"
     ), {"user_id": member_id})
+    if pref_values:
+        await db.execute(text(
+            f"INSERT INTO user_partner_preference (user_id, {', '.join(pref_values)})"
+            f" VALUES (:user_id, {', '.join(':' + key for key in pref_values)})"
+            f" ON DUPLICATE KEY UPDATE {', '.join(f'{key} = VALUES({key})' for key in pref_values)}"
+        ), {"user_id": member_id, **pref_values})
+    # 录入的资料当场折算完整度，红娘和后台看到的是真实进度而不是恒为 0。
+    await recalculate_completion(db, member_id)
     actor = await require_workspace(db, current)
     organization_id = actor.organization_id
     await db.execute(text(
@@ -2218,3 +2628,161 @@ async def create_workspace_introduction(
     await _audit(db, actor.user_id, "matchmaker_workspace.introduction.create", "matchmaker_introduction", introduction_id, body.result)
     await db.commit()
     return WorkspaceIntroductionCreated(id=introduction_id, status=body.result)
+
+
+UNASSIGNED_MATCHMAKER_ID = 0
+"""matchmaker_introduction.matchmaker_id 是 NOT NULL。申请人只归属到门店、还没指定具体红娘时用它占位：
+这一行不属于任何具体红娘，靠 organization_id 让该门店的超级红娘看到（_scope_predicate 的 SUPER 分支）。"""
+
+
+async def _application_follow_up_owner(db: AsyncSession, user_id: int) -> tuple[int, int | None] | None:
+    """解析「谁来跟进这条申请牵线」：谁发起申请就挂谁的服务红娘，没有服务红娘就挂承接门店。
+
+    返回 None 表示这条申请不该生成牵线记录：申请人本人是服务红娘（不是会员），
+    或既没有生效归属、又没配置承接门店（MEMBER_AUTO_ASSIGN_ORGANIZATION_ID 留空），挂上去也没有人看得见。
+    """
+    staff = await db.scalar(text("""SELECT 1 FROM user_role WHERE user_id = :user_id
+        AND role_code = 'service_matchmaker' AND status = 1 LIMIT 1"""), {"user_id": user_id})
+    if staff:
+        return None
+    assignment = (
+        await db.execute(
+            text("""SELECT matchmaker_id, organization_id FROM resource_assignment
+                WHERE user_id = :user_id AND status = 1 ORDER BY id DESC LIMIT 1"""),
+            {"user_id": user_id},
+        )
+    ).mappings().first()
+    matchmaker_id = (
+        int(assignment["matchmaker_id"])
+        if assignment is not None and assignment["matchmaker_id"] is not None
+        else UNASSIGNED_MATCHMAKER_ID
+    )
+    organization_id = (
+        int(assignment["organization_id"])
+        if assignment is not None and assignment["organization_id"] is not None
+        else settings.member_auto_assign_organization_id
+    )
+    if matchmaker_id == UNASSIGNED_MATCHMAKER_ID and organization_id is None:
+        return None
+    return matchmaker_id, organization_id
+
+
+async def record_member_application_introduction(
+    db: AsyncSession, application_id: int, from_user_id: int, to_user_id: int
+) -> None:
+    """会员在小程序点「申请认识」= 红娘牵线管理里的一条申请牵线，落库即为待牵线。
+
+    与红娘手工「添加牵线记录」是同一张表、同一套状态；跟进人按申请人的生效归属解析。
+    note 用 discovery-apply:{申请 id} 作幂等键，同一次申请只会有一行。
+    调用方（create_application）持有事务，这里不 commit，牵线记录和申请一起成功或一起回滚。
+    """
+    owner = await _application_follow_up_owner(db, from_user_id)
+    if owner is None:
+        return
+    matchmaker_id, organization_id = owner
+    note = f"discovery-apply:{application_id}"
+    if await db.scalar(
+        text("SELECT 1 FROM matchmaker_introduction WHERE note = :note LIMIT 1"), {"note": note}
+    ):
+        return
+    await db.execute(
+        text("""INSERT INTO matchmaker_introduction
+            (from_user_id, to_user_id, matchmaker_id, organization_id, status, note, created_at, updated_at)
+            VALUES (:f, :t, :m, :org, 'PENDING', :note, UTC_TIMESTAMP(), UTC_TIMESTAMP())"""),
+        {"f": from_user_id, "t": to_user_id, "m": matchmaker_id, "org": organization_id, "note": note},
+    )
+
+
+async def sync_member_application_introduction(
+    db: AsyncSession, from_user_id: int, to_user_id: int, *, succeeded: bool, failure_reason: str | None = None
+) -> None:
+    """被申请方同意或拒绝、以及申请超时后，把这对会员仍在进行的牵线记录同步成终态。
+
+    只改 PENDING/IN_PROGRESS：红娘手工判过的成功/失败是她对线下撮合过程的结论，不被会员侧结果改写。
+    会员自发起与红娘手工录入的进行中记录都会同步，口径统一到「被认识方的决定即牵线结果」。
+    """
+    status = "SUCCEEDED" if succeeded else "FAILED"
+    reason = None if succeeded else (failure_reason or "对方暂时婉拒了你的申请")[:500]
+    await db.execute(
+        text("""UPDATE matchmaker_introduction
+            SET status = :status, failure_reason = :reason, updated_at = UTC_TIMESTAMP()
+            WHERE from_user_id = :f AND to_user_id = :t AND status IN ('PENDING', 'IN_PROGRESS')"""),
+        {"status": status, "reason": reason, "f": from_user_id, "t": to_user_id},
+    )
+
+
+ADMIN_MATCH_RECORD_NOTE_PREFIX = "admin-entry"
+"""后台「牵线记录」同步到 matchmaker_introduction 的 note 前缀，`admin-entry:{match_apply id}` 即幂等键。"""
+
+_ADMIN_STATUS_TO_INTRODUCTION: dict[int, str] = {
+    0: "PENDING",
+    1: "SUCCEEDED",
+    2: "FAILED",
+    3: "FAILED",
+}
+
+
+async def _match_record_follow_up_owner(
+    db: AsyncSession, from_user_id: int, to_user_id: int
+) -> tuple[int, int | None] | None:
+    """后台牵线的跟进人：优先发起方的具体归属红娘，其次被牵方的，两边都只有门店公海时落发起方门店。
+
+    后台新增只填两个会员 ID，「谁发起」并不成立，所以不能直接用 §5.6 的申请人口径；
+    `_application_follow_up_owner` 在没有具体红娘时会返回 0 占位的门店公海行，
+    这里要继续试另一方有没有真正的归属红娘，否则牵线记录会被吸进公海没人跟。
+    """
+    primary = await _application_follow_up_owner(db, from_user_id)
+    if primary is not None and primary[0] != UNASSIGNED_MATCHMAKER_ID:
+        return primary
+    counterpart = await _application_follow_up_owner(db, to_user_id)
+    if counterpart is not None and counterpart[0] != UNASSIGNED_MATCHMAKER_ID:
+        return counterpart
+    return primary or counterpart
+
+
+async def sync_admin_match_record_introduction(
+    db: AsyncSession,
+    record_id: int,
+    from_user_id: int,
+    to_user_id: int,
+    status: int,
+    *,
+    created_at: datetime | None = None,
+    failure_reason: str | None = None,
+) -> None:
+    """后台「牵线记录」写 match_apply 时同步一条 matchmaker_introduction。
+
+    口径与 §5.6 的会员申请认识一致：match_apply 保持后台原有读写不变，牵线记录以
+    matchmaker_introduction 为唯一事实表，红娘在工作台和小程序资料待审里看到的是同一批记录。
+    跟进人按双方会员的生效归属解析（见 _match_record_follow_up_owner），
+    双方都没有生效归属、又没有配置承接门店时不生成记录——挂上去也没有任何红娘看得见。
+    note 用 `admin-entry:{match_apply id}` 作幂等键，且按 note 而非 (matchmaker_id, note) 查重：
+    会员改派后归属红娘会变，若按联合键会重复插一条。
+    调用方（后台路由）持有事务，这里不 commit，两条写入一起成功或一起回滚。
+    """
+    introduction_status = _ADMIN_STATUS_TO_INTRODUCTION.get(status, "PENDING")
+    reason = ((failure_reason or "")[:500] or None) if introduction_status == "FAILED" else None
+    note = f"{ADMIN_MATCH_RECORD_NOTE_PREFIX}:{record_id}"
+    existing_id = await db.scalar(
+        text("SELECT id FROM matchmaker_introduction WHERE note = :note LIMIT 1"), {"note": note}
+    )
+    if existing_id is not None:
+        await db.execute(
+            text("""UPDATE matchmaker_introduction
+                SET status = :status, failure_reason = :reason, updated_at = UTC_TIMESTAMP() WHERE id = :id"""),
+            {"status": introduction_status, "reason": reason, "id": int(existing_id)},
+        )
+        return
+    owner = await _match_record_follow_up_owner(db, from_user_id, to_user_id)
+    if owner is None:
+        return
+    matchmaker_id, organization_id = owner
+    await db.execute(
+        text("""INSERT INTO matchmaker_introduction
+            (from_user_id, to_user_id, matchmaker_id, organization_id, status, failure_reason, note, created_at, updated_at)
+            VALUES (:f, :t, :m, :org, :status, :reason, :note, COALESCE(:created_at, UTC_TIMESTAMP()), UTC_TIMESTAMP())"""),
+        {
+            "f": from_user_id, "t": to_user_id, "m": matchmaker_id, "org": organization_id,
+            "status": introduction_status, "reason": reason, "note": note, "created_at": created_at,
+        },
+    )

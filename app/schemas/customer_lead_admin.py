@@ -1,6 +1,6 @@
 """Customer lead contracts for the back office."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 LeadStatus = Literal["NEW", "CONTACTED", "INTENDED", "CONVERTED", "LOST", "CLOSED"]
 # 客源审核状态：active 有效 / pending 待核
 LeadAuditStatus = Literal["active", "pending"]
+# 入库后会员公开资料的审核状态
+LeadReviewStatus = Literal["PENDING", "PASSED", "REJECTED"]
 # 客源性别（A13）：0未知 1男 2女，与 users.gender 同语义
 LeadGender = Literal[0, 1, 2]
 
@@ -23,9 +25,12 @@ def _strip_contact(value: object) -> object:
 
 class CustomerLeadCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    phone: str | None = Field(default=None, max_length=32)
+    real_name: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, pattern=r"^1[3-9]\d{9}$")
     wechat: str | None = Field(default=None, max_length=128)
     source: str = Field(min_length=1, max_length=64)
+    photo: str | None = Field(default=None, max_length=512)
+    birthday: date | None = None
     intention_level: Literal[1, 2, 3] = 1
     gender: LeadGender = Field(default=0, description="性别 0未知 1男 2女（A13）")
     remark: str | None = Field(default=None, max_length=2000)
@@ -48,16 +53,20 @@ class CustomerLeadCreate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def require_contact(self) -> "CustomerLeadCreate":
-        if not self.phone and not self.wechat:
-            raise ValueError("phone 或 wechat 至少提供一个")
+    def require_phone(self) -> "CustomerLeadCreate":
+        # 业务口径：线索必须能联系到人，且只有手机号能一键入库成会员（微信号只是文本备注）。
+        if not self.phone:
+            raise ValueError("必须登记 11 位手机号")
         return self
 
 
 class CustomerLeadUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    phone: str | None = Field(default=None, max_length=32)
+    real_name: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, pattern=r"^1[3-9]\d{9}$")
     wechat: str | None = Field(default=None, max_length=128)
+    photo: str | None = Field(default=None, max_length=512)
+    birthday: date | None = None
     intention_level: Literal[1, 2, 3] | None = None
     gender: LeadGender | None = None
     status: LeadStatus | None = None
@@ -68,6 +77,17 @@ class CustomerLeadUpdate(BaseModel):
     # 追加标签，不清空已有标签（批量打标签用）。空数组视为不改动标签。
     tags: list[str] = Field(default_factory=list, max_length=20, description="追加的客源标签名称")
 
+    @model_validator(mode="before")
+    @classmethod
+    def exempt_masked_phone(cls, data: object) -> object:
+        # 旧值豁免：后台表单预填的是脱敏展示值（139****0101），原样提交视同「没有改手机号」，
+        # 既不能过格式校验，也不能把库里的真实号码覆盖成掩码串。
+        if isinstance(data, dict):
+            value = data.get("phone")
+            if isinstance(value, str) and "*" in value:
+                return {key: item for key, item in data.items() if key != "phone"}
+        return data
+
     @field_validator("phone", "wechat", mode="before")
     @classmethod
     def normalize_contact(cls, value: object) -> object:
@@ -75,7 +95,10 @@ class CustomerLeadUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_update(self) -> "CustomerLeadUpdate":
-        if not self.tags and all(value is None for value in (self.name, self.phone, self.wechat, self.intention_level, self.gender, self.status, self.remark, self.next_follow_at, self.promoter_id, self.audit_status)):
+        # 显式传 phone=null/"" 会被归一化成 None：那等于把线索改成联系不上人的死数据。
+        if "phone" in self.model_fields_set and not self.phone:
+            raise ValueError("手机号不能清空，只能改成有效的 11 位手机号")
+        if not self.tags and all(value is None for value in (self.name, self.real_name, self.phone, self.wechat, self.photo, self.gender, self.birthday, self.intention_level, self.status, self.remark, self.next_follow_at, self.promoter_id, self.audit_status)):
             raise ValueError("至少提供一个需要修改的字段")
         return self
 
@@ -112,9 +135,12 @@ class CustomerLeadFollowUp(BaseModel):
 class CustomerLead(BaseModel):
     id: int
     name: str
+    real_name: str | None = None
     phone: str | None
     wechat: str | None
     source: str
+    photo: str | None
+    birthday: date | None
     intention_level: Literal[1, 2, 3]
     gender: LeadGender = 0
     status: LeadStatus
@@ -129,6 +155,15 @@ class CustomerLead(BaseModel):
     created_by: int
     created_at: datetime
     updated_at: datetime
+
+
+class CustomerLeadConvertRequest(BaseModel):
+    """一键入库：性别可当场指定（缺省沿用线索），备注写入会员备注；归属由线索分派或 PATCH assignment 决定。"""
+
+    matchmaker_id: int | None = Field(default=None, ge=1)
+    organization_id: int | None = Field(default=None, ge=1)
+    gender: Literal[1, 2] | None = None
+    remark: str | None = Field(default=None, max_length=500)
 
 
 class CustomerLeadPage(BaseModel):
@@ -172,11 +207,6 @@ class CustomerLeadBatchDeleteResult(BaseModel):
 
     deleted: list[int] = Field(default_factory=list)
     failed: list[CustomerLeadBatchDeleteFailure] = Field(default_factory=list)
-
-
-class CustomerLeadConvertRequest(BaseModel):
-    gender: Literal[1, 2] | None = None
-    remark: str | None = Field(default=None, max_length=500)
 
 
 class CustomerLeadConvertResult(BaseModel):
@@ -238,6 +268,7 @@ class CustomerLeadOptions(BaseModel):
     sources: list[CustomerLeadOption] = Field(default_factory=list)
     matchmakers: list[CustomerLeadOption] = Field(default_factory=list)
     promoters: list[CustomerLeadOption] = Field(default_factory=list)
+    stores: list[CustomerLeadOption] = Field(default_factory=list)
     tags: list[CustomerLeadOption] = Field(default_factory=list)
 
 

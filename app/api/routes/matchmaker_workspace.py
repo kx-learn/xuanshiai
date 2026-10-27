@@ -1,11 +1,23 @@
 """Mobile service-matchmaker workbench routes protected by normal user JWTs."""
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import CurrentUser, get_current_user
 from app.db.session import get_db
+from app.schemas.auth import (
+    CompletionResponse,
+    NicknameUpdateRequest,
+    NicknameUpdateResponse,
+    PreferenceResponse,
+    PreferenceUpdateRequest,
+    ProfileMediaResponse,
+    ProfileResponse,
+    ProfileUpdateRequest,
+)
 from app.schemas.matchmaker_workspace import (
+    MatchmakerHomepage,
+    MatchmakerHomepageUpdate,
     MatchmakerWorkspaceAccess,
     MatchmakerWorkspaceDashboard,
     MatchmakerWorkspaceProfile,
@@ -72,6 +84,7 @@ from app.services.matchmaker_workspace import (
     get_promoter_center,
     get_workspace_member_note,
     get_workspace_profile,
+    get_workspace_homepage,
     list_match_candidates,
     list_match_history,
     list_member_matchmakers,
@@ -92,15 +105,30 @@ from app.services.matchmaker_workspace import (
     list_member_follow_ups,
     list_workspace_leads,
     list_workspace_members,
+    require_review_authority,
     require_workspace,
     restore_workspace_lead,
     review_workspace_member,
     update_partner_team,
     update_workspace_lead,
     update_workspace_member_note,
+    update_workspace_homepage,
     update_workspace_profile,
+    upload_lead_photo,
     workspace_access,
     workspace_dashboard,
+)
+from app.services.matchmaker_member_profile import (
+    delete_member_photo,
+    get_member_completion,
+    get_member_preferences,
+    get_member_profile,
+    update_member_nickname,
+    update_member_preferences,
+    update_member_profile,
+    upload_member_avatar,
+    upload_member_background,
+    upload_member_photo,
 )
 
 
@@ -137,6 +165,22 @@ async def update_workbench_profile(
     return await update_workspace_profile(db, await require_workspace(db, current), body)
 
 
+@router.get("/workbench/homepage", response_model=MatchmakerHomepage, summary="查询红娘可编辑的主页资料")
+async def workbench_homepage(
+    current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> MatchmakerHomepage:
+    return await get_workspace_homepage(db, await require_workspace(db, current))
+
+
+@router.patch("/workbench/homepage", response_model=MatchmakerHomepage, summary="保存红娘主页资料")
+async def update_workbench_homepage(
+    body: MatchmakerHomepageUpdate,
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MatchmakerHomepage:
+    return await update_workspace_homepage(db, await require_workspace(db, current), body)
+
+
 @router.get("/workbench/leads", response_model=WorkspaceLeadPage, summary="查询工作范围内客源线索")
 async def workbench_leads(
     page: int = Query(1, ge=1, le=1000),
@@ -156,6 +200,16 @@ async def create_workbench_lead(
     db: AsyncSession = Depends(get_db),
 ) -> WorkspaceLead:
     return await create_workspace_lead(db, await require_workspace(db, current), body)
+
+
+@router.post("/workbench/leads/photo", status_code=201, summary="上传客源线索照片")
+async def upload_workbench_lead_photo(
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """上传客源照片，返回可直接存入 customer_lead.photo 的 URL。"""
+    return await upload_lead_photo(db, await require_workspace(db, current), file)
 
 
 @router.patch("/workbench/leads/{lead_id}", response_model=WorkspaceLead, summary="修改工作范围客源线索")
@@ -279,7 +333,161 @@ async def review_workbench_member(
     current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> WorkspaceMember:
-    return await review_workspace_member(db, await require_workspace(db, current), member_id, body)
+    actor = require_review_authority(await require_workspace(db, current))
+    return await review_workspace_member(db, actor, member_id, body)
+
+
+@router.get(
+    "/workbench/members/{member_id}/profile",
+    response_model=ProfileResponse,
+    summary="服务红娘查看会员完整资料",
+)
+async def workbench_member_profile(
+    member_id: int = Path(..., ge=1),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """返回与「我的资料」同构的会员资料，供红娘代编页直接回填。"""
+    await require_workspace(db, current)
+    return await get_member_profile(db, member_id)
+
+
+@router.patch(
+    "/workbench/members/{member_id}/profile",
+    response_model=ProfileResponse,
+    summary="服务红娘修改会员资料",
+)
+async def update_workbench_member_profile(
+    member_id: int = Path(..., ge=1),
+    body: ProfileUpdateRequest = ...,
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """代会员更新资料并重算完整度，允许修正性别。"""
+    await require_workspace(db, current)
+    return await update_member_profile(db, member_id, body)
+
+
+@router.get(
+    "/workbench/members/{member_id}/preferences",
+    response_model=PreferenceResponse,
+    summary="服务红娘查看会员择偶要求",
+)
+async def workbench_member_preferences(
+    member_id: int = Path(..., ge=1),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await require_workspace(db, current)
+    return await get_member_preferences(db, member_id)
+
+
+@router.put(
+    "/workbench/members/{member_id}/preferences",
+    response_model=PreferenceResponse,
+    summary="服务红娘修改会员择偶要求",
+)
+async def update_workbench_member_preferences(
+    member_id: int = Path(..., ge=1),
+    body: PreferenceUpdateRequest = ...,
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await require_workspace(db, current)
+    return await update_member_preferences(db, member_id, body)
+
+
+@router.get(
+    "/workbench/members/{member_id}/completion",
+    response_model=CompletionResponse,
+    summary="服务红娘查询会员资料完整度",
+)
+async def workbench_member_completion(
+    member_id: int = Path(..., ge=1),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CompletionResponse:
+    await require_workspace(db, current)
+    return await get_member_completion(db, member_id)
+
+
+@router.patch(
+    "/workbench/members/{member_id}/nickname",
+    response_model=NicknameUpdateResponse,
+    summary="服务红娘修改会员昵称",
+)
+async def update_workbench_member_nickname(
+    member_id: int = Path(..., ge=1),
+    body: NicknameUpdateRequest = ...,
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> NicknameUpdateResponse:
+    await require_workspace(db, current)
+    return await update_member_nickname(db, member_id, body.nickname)
+
+
+@router.post(
+    "/workbench/members/{member_id}/avatar",
+    response_model=ProfileMediaResponse,
+    status_code=201,
+    summary="服务红娘代传会员头像",
+)
+async def upload_workbench_member_avatar(
+    member_id: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """代传头像直接审核通过，保存后立即在会员主页展示。"""
+    await require_workspace(db, current)
+    return await upload_member_avatar(db, member_id, file)
+
+
+@router.post(
+    "/workbench/members/{member_id}/background",
+    response_model=ProfileMediaResponse,
+    status_code=201,
+    summary="服务红娘代传会员主页背景墙",
+)
+async def upload_workbench_member_background(
+    member_id: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await require_workspace(db, current)
+    return await upload_member_background(db, member_id, file)
+
+
+@router.post(
+    "/workbench/members/{member_id}/photos",
+    response_model=ProfileMediaResponse,
+    status_code=201,
+    summary="服务红娘代传会员相册图片",
+)
+async def upload_workbench_member_photo(
+    member_id: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await require_workspace(db, current)
+    return await upload_member_photo(db, member_id, file)
+
+
+@router.delete(
+    "/workbench/members/{member_id}/photos/{media_id}",
+    status_code=204,
+    summary="服务红娘删除会员相册图片",
+)
+async def remove_workbench_member_photo(
+    member_id: int = Path(..., ge=1),
+    media_id: int = Path(..., ge=1),
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await require_workspace(db, current)
+    await delete_member_photo(db, member_id, media_id)
 
 
 @router.get("/workbench/members/{member_id}/follow-ups", response_model=WorkspaceMemberFollowUpPage, summary="查询会员服务跟进")
@@ -323,7 +531,11 @@ async def workbench_match_candidates(
     return await list_match_candidates(db, await require_workspace(db, current), member_id, page, page_size)
 
 
-@router.get("/workbench/members/{member_id}/match-history", response_model=WorkspaceMatchHistoryPage, summary="查询只读牵线历史")
+@router.get(
+    "/workbench/members/{member_id}/match-history",
+    response_model=WorkspaceMatchHistoryPage,
+    summary="查询会员的牵线记录（只读，数据源为 matchmaker_introduction）",
+)
 async def workbench_match_history(
     member_id: int = Path(..., ge=1),
     page: int = Query(1, ge=1, le=1000),
