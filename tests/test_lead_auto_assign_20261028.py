@@ -94,17 +94,27 @@ async def test_auto_assign_flag_off_short_circuits(monkeypatch: pytest.MonkeyPat
 
 
 class _FakeResult:
+    def __init__(self, rows: list | None = None) -> None:
+        self._rows = rows or []
+
     def scalar(self):
         return 1
 
+    def all(self):
+        return self._rows
+
 
 class _FakeDb:
-    def __init__(self) -> None:
+    def __init__(self, columns: list[str] | None = None) -> None:
         self.writes: list[tuple[str, dict]] = []
         self.committed = False
+        # information_schema 探测结果：默认无附加列（assigned_at 等走缺列降级）。
+        self.columns = columns or []
 
     async def execute(self, stmt, params=None):  # noqa: ANN001
         self.writes.append((str(stmt), dict(params or {})))
+        if "information_schema.COLUMNS" in str(stmt):
+            return _FakeResult([(name,) for name in self.columns])
         return _FakeResult()
 
     async def commit(self) -> None:
@@ -209,6 +219,26 @@ async def test_auto_assign_lead_force_overwrites_existing(monkeypatch: pytest.Mo
     assert result.assigned is True
     assert result.matchmaker_id == 123
     assert any("UPDATE customer_lead SET matchmaker_id" in sql for sql, _ in db.writes)
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_lead_writes_assigned_at_when_column_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """assigned_at 存在时必须随归属同写，否则「分派日期」筛选恒空。"""
+    calls = [_lead(matchmaker_id=None), _lead(matchmaker_id=123)]
+    idx = {"i": 0}
+
+    async def seq_get_lead(_db, _lead_id, _redaction="standard", **_k):
+        item = calls[idx["i"]]
+        idx["i"] += 1
+        return item
+
+    monkeypatch.setattr(lead_service, "get_lead", seq_get_lead)
+    await _patch_resolve(monkeypatch, 123)
+    db = _FakeDb(columns=["assigned_at"])
+
+    await lead_service.auto_assign_lead(db, 1, 10)
+
+    assert any("assigned_at = UTC_TIMESTAMP()" in sql for sql, _ in db.writes)
 
 
 def test_create_schema_auto_assign_default_and_result_assigned() -> None:

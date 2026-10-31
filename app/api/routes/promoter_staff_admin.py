@@ -194,8 +194,8 @@ async def promoter_platform_token(
     current: CurrentMatchmakerAdmin = Depends(get_current_matchmaker_admin),
     db: AsyncSession = Depends(get_db),
 ) -> PromoterPlatformTokenResponse:
-    current.require("matchmaker.read")
-    return await service.promoter_platform_token(db, user_id)
+    current.require("matchmaker.manage")
+    return await service.promoter_platform_token(db, user_id, current.account.id)
 
 
 @router.delete("/{user_id}", response_model=PromoterDeleteResponse, summary="删除推广红娘")

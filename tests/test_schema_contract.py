@@ -21,8 +21,9 @@ def test_normalize_type_unifies_int_width_and_constraints() -> None:
 def test_code_schema_covers_every_table_with_a_primary_key() -> None:
     schema = parse_code_schema()
     # 257 基线 + 微信支付改造 5 张表（payment_refund / payment_fulfillment_job /
-    # payment_notify_log / payment_reconcile_batch / payment_reconcile_diff）。
-    assert len(schema) == 262
+    # payment_notify_log / payment_reconcile_batch / payment_reconcile_diff）
+    # + 红娘菜单权限已配置标记表（F15），合计 263。
+    assert len(schema) == 263
     assert all(spec["has_primary_key"] for spec in schema.values()), "所有表都应有主键"
     assert "paper_plane_profile_unlock" in schema
     assert "payment_refund" in schema

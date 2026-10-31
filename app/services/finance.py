@@ -1024,6 +1024,11 @@ def _credit_category_of(source_type: str) -> str | None:
     return None
 
 
+# 积分变动备注列名为保留字 ``desc``，旧库可能未建该列 → 缺列时返回 NULL，列表不整页 500。
+_CREDIT_REASON_COLUMN_SQL = """SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_points' AND COLUMN_NAME = 'desc'"""
+
+
 async def admin_list_credit_records(
     db: AsyncSession,
     page: int,
@@ -1067,9 +1072,12 @@ async def admin_list_credit_records(
     clause = " AND ".join(where)
     base = """FROM user_points up JOIN users u ON u.id = up.user_id
         LEFT JOIN user_privacy pr ON pr.user_id = u.id"""
+    # reason 取自 user_points.desc（后台发放/扣减时填写的备注），缺列时置空。
+    reason_sql = "up.`desc`" if await db.scalar(text(_CREDIT_REASON_COLUMN_SQL)) else "NULL"
     rows = await db.execute(text(f"""SELECT up.id, up.user_id, u.nickname, u.avatar, u.phone,
         CASE WHEN up.amount > 0 THEN 'CREDIT' ELSE 'DEBIT' END AS direction,
-        ABS(up.amount) AS amount, 'AVAILABLE' AS state, up.source_type, up.operator_id, up.created_at
+        ABS(up.amount) AS amount, 'AVAILABLE' AS state, up.source_type, up.operator_id, up.created_at,
+        {reason_sql} AS reason
         {base} WHERE {clause} ORDER BY up.id DESC LIMIT :limit OFFSET :offset"""), params)
     count = await db.execute(text(f"SELECT COUNT(*) {base} WHERE {clause}"),
         {key: value for key, value in params.items() if key not in ("limit", "offset")})
@@ -1091,6 +1099,7 @@ async def admin_list_credit_records(
             source_type=source_type,
             action_source="管理员操作" if source_type == "admin_grant" else "系统",
             category=_credit_category_of(source_type),
+            reason=data.get("reason"),
             operator_id=data["operator_id"] if source_type == "admin_grant" else None,
             created_at=data["created_at"],
         ))

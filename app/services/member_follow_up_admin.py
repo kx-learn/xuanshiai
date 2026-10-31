@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.services.audio_duration import parse_audio_duration
 from app.services.media_access import MEDIA_CATEGORY_FOLLOW_UP, sign_media_url
 from app.schemas.member_follow_up_admin import (
     MemberCallRecordListPage,
@@ -870,6 +871,8 @@ async def create_follow_up_with_media(
     if has_voice:
         voice_data = await _fu_read_limited(voice, FOLLOW_UP_VOICE_MAX_BYTES)  # type: ignore[union-attr]
         suffix = _voice_suffix(voice)  # type: ignore[arg-type]
+        # 时长以服务端解析为准，前端传值仅在容器无法识别时兜底。
+        voice_duration_sec = parse_audio_duration(voice_data) or voice_duration_sec
         name = uuid.uuid4().hex
         target = directory / f"follow-up-voice-{name}.{suffix}"
         await _fu_write_bytes(target, voice_data)

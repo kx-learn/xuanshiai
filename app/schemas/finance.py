@@ -491,6 +491,7 @@ class CreditRecordItem(BaseModel):
     source_type: str = Field(description="流水来源类型，如 admin_grant（后台发放/扣减）；C 端既有行为 system")
     action_source: str = Field(description="操作来源文案，管理员操作为『管理员操作』")
     category: str | None = Field(default=None, description="积分类别编码；未归类时为 null")
+    reason: str | None = Field(default=None, description="积分变动备注（user_points.desc）；旧库无该列或未填时为 null")
     operator_id: int | None = Field(default=None, description="操作人 users.id；非人工操作时为 null")
     created_at: datetime = Field(description="流水发生时间")
 

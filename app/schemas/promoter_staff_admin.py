@@ -200,6 +200,12 @@ class PromoterStaffCreate(BaseModel):
     user_id: int | None = Field(default=None, ge=1)
     lookup: str | None = Field(default=None, min_length=2, max_length=100)
     lookup_by: Literal["nickname", "phone"] = "nickname"
+    display_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="推广红娘展示名；不传回退绑定用户的昵称",
+    )
     phone: str | None = Field(default=None, max_length=20, description="推广红娘联系电话，不传回退绑定用户的手机号")
     channel: str | None = Field(default=None, max_length=64)
     intro: str | None = Field(default=None, max_length=500)

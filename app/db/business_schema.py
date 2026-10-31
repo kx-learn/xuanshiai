@@ -992,6 +992,13 @@ BUSINESS_TABLES = {
             KEY `idx_matchmaker_menu_user` (`matchmaker_user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='红娘已分配菜单'
     """,
+    "matchmaker_menu_permission_state": """
+        CREATE TABLE IF NOT EXISTS `matchmaker_menu_permission_state` (
+            `matchmaker_user_id` bigint unsigned NOT NULL COMMENT '红娘 users.id',
+            `configured_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一次保存菜单权限的时间',
+            PRIMARY KEY (`matchmaker_user_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='红娘菜单权限已配置标记（F15：区分未配置与清空）'
+    """,
     "matchmaker_tutorial": """
         CREATE TABLE IF NOT EXISTS `matchmaker_tutorial` (
             `id` bigint unsigned NOT NULL AUTO_INCREMENT,

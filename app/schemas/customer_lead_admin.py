@@ -83,6 +83,8 @@ class CustomerLeadUpdate(_LeadProfileFields):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     phone: str | None = Field(default=None, max_length=32)
     wechat: str | None = Field(default=None, max_length=128)
+    # 客源来源在创建时必填，编辑时同样允许修改（此前只在 Create 里，编辑被静默丢弃）。
+    source: str | None = Field(default=None, min_length=1, max_length=64)
     intention_level: Literal[1, 2, 3, 4, 5, 6, 7] | None = None
     gender: LeadGender | None = None
     status: LeadStatus | None = None
@@ -90,6 +92,14 @@ class CustomerLeadUpdate(_LeadProfileFields):
     next_follow_at: datetime | None = None
     promoter_id: int | None = Field(default=None, ge=1)
     audit_status: LeadAuditStatus | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_tags(cls, data: object) -> object:
+        """客源标签已下线（2026-10-27）：显式报 422，而不是静默丢弃造成「假成功」。"""
+        if isinstance(data, dict) and data.get("tags") not in (None, [], {}):
+            raise ValueError("客源标签功能已下线，不支持提交 tags")
+        return data
 
     @field_validator("phone", "wechat", mode="before")
     @classmethod

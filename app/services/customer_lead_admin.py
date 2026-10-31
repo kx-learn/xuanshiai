@@ -34,6 +34,7 @@ from app.services.customer_lead_contact import (
 )
 from app.services.lead_apportion import resolve_assigned_matchmaker
 from app.core.config import settings
+from app.services.audio_duration import parse_audio_duration
 from app.services.media_access import MEDIA_CATEGORY_FOLLOW_UP, sign_media_url
 # 客源跟进附件与会员侧完全同构：直接复用会员跟进的落盘/webp/录音校验/JSON 解析助手，
 # 避免两套实现漂移（图片转 webp、录音白名单、限流读取等均单一真相源）。
@@ -173,6 +174,10 @@ async def create_lead(db: AsyncSession, account_id: int, request: CustomerLeadCr
         if assigned_matchmaker_id:
             insert_columns.append("matchmaker_id")
             insert_payload["matchmaker_id"] = assigned_matchmaker_id
+            # 分派时间与归属同写：后台「分派日期」筛选只认 assigned_at，缺列时静默跳过。
+            if "assigned_at" in columns:
+                insert_columns.append("assigned_at")
+                insert_payload["assigned_at"] = datetime.utcnow()
         insert_sql = f"""INSERT INTO customer_lead
             ({', '.join(insert_columns)})
             VALUES (:{', '.join(insert_columns)})"""
@@ -767,7 +772,11 @@ async def assign_lead(
     assign_where = ["id = :id"]
     assign_params: dict[str, Any] = {**values, "id": lead_id}
     _merge_scope(assign_where, assign_params, scope, scope_params)
-    set_clause = ", ".join(f"{key} = :{key}" for key in values)
+    set_parts = [f"{key} = :{key}" for key in values]
+    # 归属变更同步刷新分派时间；显式清空归属时一并清空，避免「无归属却有分派时间」。
+    if "matchmaker_id" in values and "assigned_at" in await _lead_columns(db):
+        set_parts.append("assigned_at = CASE WHEN :matchmaker_id IS NULL THEN NULL ELSE UTC_TIMESTAMP() END")
+    set_clause = ", ".join(set_parts)
     await db.execute(text(f"UPDATE customer_lead SET {set_clause}, updated_at = UTC_TIMESTAMP() WHERE {' AND '.join(assign_where)}"), assign_params)
     await db.execute(text("INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id) VALUES (:actor, 'customer_lead.assign', 'customer_lead', :id)"), {"actor": account_id, "id": lead_id})
     await db.commit()
@@ -798,7 +807,8 @@ async def auto_assign_lead(
     assign_where = ["id = :id"]
     assign_params: dict[str, Any] = {"id": lead_id, "matchmaker_id": matchmaker_id}
     _merge_scope(assign_where, assign_params, scope, scope_params)
-    await db.execute(text(f"UPDATE customer_lead SET matchmaker_id = :matchmaker_id, updated_at = UTC_TIMESTAMP() WHERE {' AND '.join(assign_where)}"), assign_params)
+    assigned_at_sql = ", assigned_at = UTC_TIMESTAMP()" if "assigned_at" in await _lead_columns(db) else ""
+    await db.execute(text(f"UPDATE customer_lead SET matchmaker_id = :matchmaker_id{assigned_at_sql}, updated_at = UTC_TIMESTAMP() WHERE {' AND '.join(assign_where)}"), assign_params)
     await db.execute(text("INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id) VALUES (:actor, 'customer_lead.auto_assign', 'customer_lead', :id)"), {"actor": account_id, "id": lead_id})
     await db.commit()
     updated = await get_lead(db, lead_id, redaction_level, scope=scope, scope_params=scope_params)
@@ -902,6 +912,8 @@ async def create_follow_up_with_media(
     if has_voice:
         voice_data = await _fu_read_limited(voice, FOLLOW_UP_VOICE_MAX_BYTES)
         suffix = _voice_suffix(voice)
+        # 时长以服务端解析为准，前端传值仅在容器无法识别时兜底。
+        voice_duration_sec = parse_audio_duration(voice_data) or voice_duration_sec
         name = uuid.uuid4().hex
         target = directory / f"follow-up-voice-{name}.{suffix}"
         await _fu_write_bytes(target, voice_data)
@@ -1177,7 +1189,8 @@ async def abandon_lead(
     abandon_where = ["id = :id"]
     abandon_params: dict[str, Any] = {"id": lead_id}
     _merge_scope(abandon_where, abandon_params, scope, scope_params)
-    await db.execute(text(f"UPDATE customer_lead SET status = 'LOST', matchmaker_id = NULL, next_follow_at = NULL WHERE {' AND '.join(abandon_where)}"), abandon_params)
+    abandon_assigned_sql = ", assigned_at = NULL" if "assigned_at" in await _lead_columns(db) else ""
+    await db.execute(text(f"UPDATE customer_lead SET status = 'LOST', matchmaker_id = NULL{abandon_assigned_sql}, next_follow_at = NULL WHERE {' AND '.join(abandon_where)}"), abandon_params)
     await db.execute(text("INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id) VALUES (:actor, 'customer_lead.abandon', 'customer_lead', :id)"), {"actor": account_id, "id": lead_id})
     await db.commit()
     row = (await db.execute(text("SELECT id, lead_id, reason, abandoned_by, abandoned_at, restored_by, restored_at, restore_reason FROM customer_lead_abandonment WHERE id = :id"), {"id": int(result.lastrowid)})).mappings().one()
@@ -1337,6 +1350,7 @@ async def _insert_leads(
     errors: list[str] = []
     await _ensure_user_in_scope(db, default_matchmaker_id, assignment_scope, assignment_scope_params)
     await _ensure_user_in_scope(db, default_promoter_id, assignment_scope, assignment_scope_params)
+    columns = await _lead_columns(db)
     for index, row in enumerate(rows, start=start_index):  # Excel 数据从第 2 行起
         if not row.phone and not row.wechat:
             failed += 1
@@ -1360,19 +1374,22 @@ async def _insert_leads(
                 if duplicate.scalar():
                     skipped += 1
                     continue
-            result = await db.execute(text("""INSERT INTO customer_lead
-                (name, phone, wechat, source, intention_level, remark,
-                 matchmaker_id, promoter_id, audit_status, created_by)
-                VALUES (:name, :phone, :wechat, :source, :intention_level, :remark,
-                 :matchmaker_id, :promoter_id, :audit_status, :created_by)"""),
-                {
-                    "name": row.name, "phone": row.phone, "wechat": row.wechat,
-                    "source": (row.source or "").strip() or default_source,
-                    "intention_level": row.intention_level, "remark": row.remark,
-                    "matchmaker_id": default_matchmaker_id, "promoter_id": default_promoter_id,
-                    "audit_status": default_audit_status, "created_by": account_id,
-                },
-            )
+            insert_columns = ["name", "phone", "wechat", "source", "intention_level", "remark",
+                              "matchmaker_id", "promoter_id", "audit_status", "created_by"]
+            insert_payload: dict[str, Any] = {
+                "name": row.name, "phone": row.phone, "wechat": row.wechat,
+                "source": (row.source or "").strip() or default_source,
+                "intention_level": row.intention_level, "remark": row.remark,
+                "matchmaker_id": default_matchmaker_id, "promoter_id": default_promoter_id,
+                "audit_status": default_audit_status, "created_by": account_id,
+            }
+            # 导入即分派时补写分派时间，保证「分派日期」筛选覆盖导入产生的线索。
+            if default_matchmaker_id and "assigned_at" in columns:
+                insert_columns.append("assigned_at")
+                insert_payload["assigned_at"] = datetime.utcnow()
+            result = await db.execute(text(f"""INSERT INTO customer_lead
+                ({', '.join(insert_columns)})
+                VALUES (:{', '.join(insert_columns)})"""), insert_payload)
             lead_id = int(result.lastrowid)
             await db.execute(text("""INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id)
                 VALUES (:actor, 'customer_lead.import', 'customer_lead', :id)"""),

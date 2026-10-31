@@ -110,15 +110,57 @@ _STATUS_GROUP_SQL: dict[str, str] = {
     "closed": "a.status = 3",
 }
 
+# 搜索方式（search_type）：值为服务端白名单内的固定 SQL 片段，不拼接用户输入；
+# 未传或未知取值退化为 smart（双方昵称/手机/会员编号），而非静默返回全量。
+_MATCH_SEARCH_TYPE_SQL: dict[str, str] = {
+    "smart": "(fu.nickname LIKE :kw OR tu.nickname LIKE :kw OR fu.phone LIKE :kw OR tu.phone LIKE :kw"
+    " OR CONCAT('G', LPAD(fu.id, 6, '0')) LIKE :kw OR CONCAT('G', LPAD(tu.id, 6, '0')) LIKE :kw)",
+    "nickname": "(fu.nickname LIKE :kw OR tu.nickname LIKE :kw)",
+    "phone": "(fu.phone LIKE :kw OR tu.phone LIKE :kw)",
+    "from": "(fu.nickname LIKE :kw OR fu.phone LIKE :kw OR CONCAT('G', LPAD(fu.id, 6, '0')) LIKE :kw)",
+    "to": "(tu.nickname LIKE :kw OR tu.phone LIKE :kw OR CONCAT('G', LPAD(tu.id, 6, '0')) LIKE :kw)",
+    "code": "(CONCAT('G', LPAD(fu.id, 6, '0')) LIKE :kw OR CONCAT('G', LPAD(tu.id, 6, '0')) LIKE :kw)",
+}
+
+
+def _apply_match_search(
+    where: list[str], params: dict[str, object], search: str | None, search_type: str | None
+) -> None:
+    """按 search_type 拼接搜索谓词；纯数字额外按双方 user_id 精确命中。
+
+    直接调用（非 FastAPI 注入）时未传的查询参数会是 `Query` 占位对象，
+    这里统一按「非字符串即未传入」处理，避免 `Query.isdigit` 之类错误。
+    """
+    query = search if isinstance(search, str) and search else None
+    if not query:
+        return
+    kind = search_type if isinstance(search_type, str) else None
+    sql = _MATCH_SEARCH_TYPE_SQL.get(kind or "smart", _MATCH_SEARCH_TYPE_SQL["smart"])
+    params["kw"] = f"%{query}%"
+    if query.isdigit():
+        params["kw_id"] = int(query)
+        where.append(f"({sql} OR a.from_user_id = :kw_id OR a.to_user_id = :kw_id)")
+    else:
+        where.append(sql)
+
 
 @router.get("/match-records", response_model=MatchRecordPage, summary="管理员查询牵线记录")
 async def match_records(
     page: int = Query(1, ge=1, le=1000),
     page_size: int = Query(20, ge=1, le=100),
     search: str | None = Query(None, max_length=64),
+    keyword: str | None = Query(None, max_length=64, description="search 的兼容别名（任传其一）"),
+    search_type: str | None = Query(
+        None,
+        pattern="^(smart|nickname|phone|from|to|code)$",
+        description="搜索方式：smart 综合 / nickname 双方昵称 / phone 双方手机 / from 发起方 / to 被牵线方 / code 会员编号",
+    ),
     date_from: str | None = Query(None, max_length=10, description="牵线时间起 YYYY-MM-DD（含）"),
     date_to: str | None = Query(None, max_length=10, description="牵线时间止 YYYY-MM-DD（含）"),
     matchmaker_id: int | None = Query(None, ge=1, description="按发起方会员归属的服务红娘筛选"),
+    operator_id: int | None = Query(
+        None, ge=1, description="按操作人（服务红娘）筛选；matchmaker_id 的语义别名，任传其一"
+    ),
     status_group: str | None = Query(
         None,
         pattern="^(pending|matching|success|fail|closed)$",
@@ -129,9 +171,7 @@ async def match_records(
 ) -> MatchRecordPage:
     where = ["1=1"]
     params: dict[str, object] = {"limit": page_size, "offset": (page - 1) * page_size}
-    if search:
-        where.append("(fu.nickname LIKE CONCAT('%', :search, '%') OR tu.nickname LIKE CONCAT('%', :search, '%') OR fu.phone LIKE CONCAT('%', :search, '%') OR tu.phone LIKE CONCAT('%', :search, '%'))")
-        params["search"] = search
+    _apply_match_search(where, params, search or keyword, search_type)
     if date_from:
         where.append("a.created_at >= :date_from")
         params["date_from"] = date_from
@@ -139,6 +179,9 @@ async def match_records(
         # 结束日按「含当日」处理，补到次日 00:00 前
         where.append("a.created_at < DATE_ADD(:date_to, INTERVAL 1 DAY)")
         params["date_to"] = date_to
+    if matchmaker_id is None and isinstance(operator_id, int):
+        # 前端「操作人」列走 operator 命名；与 matchmaker_id 同义，不另存列。
+        matchmaker_id = operator_id
     if matchmaker_id is not None:
         # 归属红娘取自 resource_assignment 的生效记录（派生表 ra，见下方 base）
         where.append("ra.matchmaker_id = :matchmaker_id")
@@ -172,24 +215,31 @@ async def match_records(
 @router.get("/match-records/statistics", response_model=MatchRecordStatistics, summary="牵线记录顶部统计卡")
 async def match_record_statistics(
     search: str | None = Query(None, max_length=64),
+    keyword: str | None = Query(None, max_length=64, description="search 的兼容别名（任传其一）"),
+    search_type: str | None = Query(
+        None,
+        pattern="^(smart|nickname|phone|from|to|code)$",
+        description="搜索方式，与列表同口径",
+    ),
     date_from: str | None = Query(None, max_length=10),
     date_to: str | None = Query(None, max_length=10),
     matchmaker_id: int | None = Query(None, ge=1),
+    operator_id: int | None = Query(None, ge=1, description="按操作人（服务红娘）筛选；matchmaker_id 的语义别名"),
     current: CurrentMatchmakerAdmin = Depends(get_current_matchmaker_admin),
     db: AsyncSession = Depends(get_db),
 ) -> MatchRecordStatistics:
     """统计卡与列表共用筛选条件，点击任一卡片即以 status_group 重新拉列表。"""
     where = ["1=1"]
     params: dict[str, object] = {}
-    if search:
-        where.append("(fu.nickname LIKE CONCAT('%', :search, '%') OR tu.nickname LIKE CONCAT('%', :search, '%') OR fu.phone LIKE CONCAT('%', :search, '%') OR tu.phone LIKE CONCAT('%', :search, '%'))")
-        params["search"] = search
+    _apply_match_search(where, params, search or keyword, search_type)
     if date_from:
         where.append("a.created_at >= :date_from")
         params["date_from"] = date_from
     if date_to:
         where.append("a.created_at < DATE_ADD(:date_to, INTERVAL 1 DAY)")
         params["date_to"] = date_to
+    if matchmaker_id is None and isinstance(operator_id, int):
+        matchmaker_id = operator_id
     if matchmaker_id is not None:
         where.append("ra.matchmaker_id = :matchmaker_id")
         params["matchmaker_id"] = matchmaker_id

@@ -71,6 +71,7 @@ from app.api.routes import (
     media,
     meeting,
     member_follow_up_admin,
+    member_love_users_admin,
     member_records_admin,
     member_vip_admin,
     offline_vip_admin,
@@ -184,6 +185,7 @@ api_router.include_router(short_video_admin.packet_router, tags=["管理后台"]
 api_router.include_router(short_video_admin.homepage_router, tags=["管理后台"])
 api_router.include_router(member_follow_up_admin.router, tags=["管理后台"])
 api_router.include_router(offline_vip_admin.router, tags=["管理后台"])
+api_router.include_router(member_love_users_admin.router, tags=["管理后台"])
 api_router.include_router(reward_rule_admin.router, tags=["红娘后台"])
 api_router.include_router(apportion_config_admin.router, tags=["红娘后台"])
 api_router.include_router(commission_level_admin.router, tags=["红娘后台"])
