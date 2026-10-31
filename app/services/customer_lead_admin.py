@@ -646,6 +646,10 @@ _LEAD_PREF_COLUMNS = [
     "accept_long_distance", "accept_cross_province", "housing_requirement",
     "smoking_requirement", "drinking_requirement", "dating_goal", "meeting_pace",
     "children_intention", "extra_requirement",
+    # 后台会员管理同一套单选字符串口径（2026-10-27）；customer_lead_preference 需同步补列
+    # （迁移 20261031_01），否则 _upsert_lead_preference 会写不存在的列导致 PUT 500。
+    "income_range", "education_requirement", "marriage_requirement", "housing_expectation",
+    "smoking_expectation", "drinking_expectation", "marriage_timeline", "preferred_occupation",
 ]
 
 
