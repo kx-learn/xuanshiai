@@ -172,6 +172,25 @@ async def test_upsert_profile_row_noop_when_no_writable_column() -> None:
 
 # --------------------------------------------------------------------------- create_lead
 
+
+def _values_slots(sql: str) -> list[str]:
+    """取出 INSERT ... VALUES (...) 括号内的每个取值位（按逗号拆）。"""
+    tail = sql.split("VALUES", 1)[1].strip()
+    inner = tail[tail.index("(") + 1 : tail.rindex(")")]
+    return [slot.strip() for slot in inner.split(",")]
+
+
+def test_named_placeholders_covers_every_column() -> None:
+    assert lead_service._named_placeholders(["name", "phone"]) == ":name, :phone"
+    assert lead_service._named_placeholders([]) == ""
+
+
+def test_create_schema_rejects_unknown_field() -> None:
+    # 未知字段必须 422，不能静默丢弃后返回 201（2026-10-31 假成功事故）
+    with pytest.raises(ValidationError):
+        CustomerLeadCreate(name="王", phone="13800000000", source="抖音", realName="王小明")
+
+
 @pytest.mark.asyncio
 async def test_create_lead_writes_profile_and_derives_age(monkeypatch: pytest.MonkeyPatch) -> None:
     cols = frozenset({"gender", "real_name", "birth_date", "height", "photos", "age", "marriage"})
@@ -200,6 +219,10 @@ async def test_create_lead_writes_profile_and_derives_age(monkeypatch: pytest.Mo
         (sql, p) for sql, p in db.writes if "INSERT INTO customer_lead" in sql
     )
     assert "real_name" in insert_sql and "height" in insert_sql and "photos" in insert_sql
+    # 每个取值位都必须是命名占位符：漏冒号会退化成裸列名，写入 NULL 却仍返回成功
+    slots = _values_slots(insert_sql)
+    assert slots and all(slot.startswith(":") for slot in slots), slots
+    assert len(slots) == len({slot[1:] for slot in slots})
     assert insert_params["real_name"] == "王小明" and insert_params["height"] == 180
     assert json.loads(insert_params["photos"]) == ["a.jpg", "b.jpg"]
     # birth_date 有值 → 派生 raw age 列（整数）

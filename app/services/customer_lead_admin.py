@@ -64,6 +64,16 @@ _LEAD_PROFILE_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _named_placeholders(columns: "list[str] | tuple[str, ...]") -> str:
+    """把列名列表渲染成 ``:col, :col`` 形式的命名占位符。
+
+    必须逐列加冒号：写成 ``f"VALUES (:{', '.join(cols)})"`` 只会给第一列加冒号，
+    其余列退化成裸列名，MySQL 会当作同表列引用（新行里为 NULL），于是校验通过、
+    写入成功、但除首列外全部丢值——这类假成功极难从响应里看出来。
+    """
+    return ", ".join(f":{col}" for col in columns)
+
+
 def _lead_select_for(columns: frozenset[str]) -> str:
     """在客源主表外层 SELECT 补 gender 与已存在的本人资料列。
 
@@ -180,7 +190,7 @@ async def create_lead(db: AsyncSession, account_id: int, request: CustomerLeadCr
                 insert_payload["assigned_at"] = datetime.utcnow()
         insert_sql = f"""INSERT INTO customer_lead
             ({', '.join(insert_columns)})
-            VALUES (:{', '.join(insert_columns)})"""
+            VALUES ({_named_placeholders(insert_columns)})"""
         result = await db.execute(text(insert_sql), insert_payload)
         lead_id = int(result.lastrowid)
         await db.execute(text("""INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id)
@@ -1389,7 +1399,7 @@ async def _insert_leads(
                 insert_payload["assigned_at"] = datetime.utcnow()
             result = await db.execute(text(f"""INSERT INTO customer_lead
                 ({', '.join(insert_columns)})
-                VALUES (:{', '.join(insert_columns)})"""), insert_payload)
+                VALUES ({_named_placeholders(insert_columns)})"""), insert_payload)
             lead_id = int(result.lastrowid)
             await db.execute(text("""INSERT INTO business_audit_log (actor_user_id, action, resource_type, resource_id)
                 VALUES (:actor, 'customer_lead.import', 'customer_lead', :id)"""),

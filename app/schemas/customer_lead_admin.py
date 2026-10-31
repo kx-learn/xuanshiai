@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.auth import PreferenceResponse
 
@@ -53,6 +53,10 @@ class _LeadProfileFields(BaseModel):
 
 
 class CustomerLeadCreate(_LeadProfileFields):
+    # 未知字段直接 422：录入接口一旦静默 ignore，前端字段名一变就变成
+    # 「201 成功但资料全 null」的假成功，只能靠反查数据库才能发现。
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=128)
     phone: str | None = Field(default=None, max_length=32)
     wechat: str | None = Field(default=None, max_length=128)
